@@ -16,7 +16,7 @@ class AutoRoles(commands.Cog):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             now = datetime.now(timezone.utc)
-            cursor = timed_roles.find({"execute_at": {"$lte": now}})
+            cursor = timed_roles.find({"execute_at": {"$lte": now}, "type": {"$ne": "tempban"}})
             async for doc in cursor:
                 guild = self.bot.get_guild(doc["guild_id"])
                 if not guild:
