@@ -1,4 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+from datetime import datetime, timezone
 from config import MONGO_URI, DATABASE_NAME
 
 client = AsyncIOMotorClient(MONGO_URI)
@@ -6,3 +7,37 @@ db = client[DATABASE_NAME]
 
 guilds = db.guilds
 timed_roles = db.timed_roles
+mod_logs = db.mod_logs
+
+async def ensure_indexes():
+    await mod_logs.create_index([("guild_id", 1), ("timestamp", -1)])
+    await mod_logs.create_index([("guild_id", 1), ("action", 1)])
+    await mod_logs.create_index([("guild_id", 1), ("moderator_id", 1)])
+
+async def log_action(
+    guild_id: int,
+    action: str,
+    moderator_id: int,
+    moderator_name: str,
+    target_id: int | None = None,
+    target_name: str | None = None,
+    reason: str = "",
+    duration: str | None = None,
+    command_used: str = "",
+    channel_id: int | None = None,
+    source: str = "discord"
+):
+    await mod_logs.insert_one({
+        "guild_id": guild_id,
+        "action": action,
+        "moderator_id": moderator_id,
+        "moderator_name": moderator_name,
+        "target_id": target_id,
+        "target_name": target_name,
+        "reason": reason,
+        "duration": duration,
+        "command_used": command_used,
+        "channel_id": channel_id,
+        "source": source,
+        "timestamp": datetime.now(timezone.utc)
+    })
