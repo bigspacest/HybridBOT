@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from config import TOKEN
+from database import ensure_indexes
 
 intents = discord.Intents.default()
 intents.members = True
@@ -16,6 +17,7 @@ class HybridBOT(commands.Bot):
         )
 
     async def setup_hook(self):
+        await ensure_indexes()
         await self.load_extension("security")
         await self.load_extension("welcomer")
         await self.load_extension("autoroles")
