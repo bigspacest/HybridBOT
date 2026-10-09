@@ -1,4 +1,5 @@
 import asyncio
+import os
 import secrets
 import time
 from datetime import datetime, timezone, timedelta
@@ -7,8 +8,7 @@ from urllib.parse import urlencode
 
 import discord
 import requests
-from flask import Blueprint, request, jsonify, redirect, make_response
-from flask_cors import CORS
+from flask import Blueprint, request, jsonify, redirect, make_response, send_file
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from config import (
@@ -67,6 +67,12 @@ def require_owner(f):
         return f(*args, **kwargs)
     return wrapped
 
+# ──────────────────────── Dashboard (público) ────────────────────────
+@api.route("/dashboard")
+def dashboard():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+    return send_file(path)
+
 # ──────────────────────── Auth ────────────────────────
 @api.route("/auth/login")
 @rate_limit()
@@ -81,7 +87,7 @@ def auth_login():
     }
     url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
     resp = make_response(redirect(url))
-    resp.set_cookie("oauth_state", state, httponly=True, samesite="None",
+    resp.set_cookie("oauth_state", state, httponly=True, samesite="Lax",
                     secure=True, max_age=300)
     return resp
 
@@ -125,19 +131,22 @@ def auth_callback():
         return jsonify({"ok": False, "error": "Access denied. Owner only."}), 403
 
     session_token = create_session(user_id)
-    resp = make_response(redirect(f"{DASHBOARD_URL}/dashboard"))
+
+    # Evitar doble barra si DASHBOARD_URL termina en /
+    base = DASHBOARD_URL.rstrip("/")
+    resp = make_response(redirect(f"{base}/dashboard"))
     resp.set_cookie(
         COOKIE_NAME, session_token,
-        httponly=True, secure=True, samesite="None",
+        httponly=True, secure=True, samesite="Lax",
         max_age=COOKIE_MAX_AGE
     )
-    resp.delete_cookie("oauth_state")
+    resp.delete_cookie("oauth_state", samesite="Lax", secure=True)
     return resp
 
 @api.route("/auth/logout", methods=["POST"])
 def auth_logout():
     resp = make_response(jsonify({"ok": True, "data": None}))
-    resp.delete_cookie(COOKIE_NAME, samesite="None", secure=True)
+    resp.delete_cookie(COOKIE_NAME, samesite="Lax", secure=True)
     return resp
 
 @api.route("/api/me")
@@ -555,7 +564,6 @@ def api_action(guild_id, action):
             except discord.NotFound:
                 return {"error": "Member not found in guild"}
 
-        # Jerarquía básica
         me = guild.me
         if member.top_role >= me.top_role:
             return {"error": "Cannot moderate this member (role hierarchy)"}
@@ -572,7 +580,6 @@ def api_action(guild_id, action):
         if action == "tempban":
             if not duration:
                 return {"error": "duration required (e.g. 1h, 30m)"}
-            # reutilizamos el parser simple
             unit = duration[-1].lower()
             try:
                 value = int(duration[:-1])
