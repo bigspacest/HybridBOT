@@ -1,39 +1,3 @@
-import discord
-from discord import app_commands
-from discord.ext import commands
-from database import guilds
-from typing import Optional
-
-class Security(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    async def get_guild_config(self, guild_id: int) -> dict:
-        cfg = await guilds.find_one({"_id": guild_id})
-        if not cfg:
-            cfg = {
-                "_id": guild_id,
-                "admin_roles": [],
-                "manager_roles": [],
-                "staff_roles": [],
-                "welcome": {"channel_id": None, "message": None},
-                "autoroles": {"join": [], "timed": []}
-            }
-            await guilds.insert_one(cfg)
-        return cfg
-
-    def has_permission(self, member: discord.Member, level: str, cfg: dict) -> bool:
-        if member.guild_permissions.administrator:
-            return True
-        role_ids = [r.id for r in member.roles]
-        if level == "admin":
-            return any(r in cfg["admin_roles"] for r in role_ids)
-        if level == "manager":
-            return any(r in cfg["admin_roles"] + cfg["manager_roles"] for r in role_ids)
-        if level == "staff":
-            return any(r in cfg["admin_roles"] + cfg["manager_roles"] + cfg["staff_roles"] for r in role_ids)
-        return False
-
     @app_commands.command(name="bot-setup", description="Configure staff hierarchy roles")
     @app_commands.describe(
         action="add / remove / list",
@@ -52,7 +16,7 @@ class Security(commands.Cog):
             app_commands.Choice(name="staff", value="staff")
         ]
     )
-    async def bot_setup(
+    async def setup_bot(
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
@@ -120,6 +84,3 @@ class Security(commands.Cog):
                     "Role not found in that level.",
                     ephemeral=True
                 )
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(Security(bot))
