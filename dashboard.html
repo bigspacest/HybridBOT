@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BIGworks · HybridBOT</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--tx:#1d1d1f;--tx2:#6e6e73;--line:#e5e5ea;--acc:#0071e3;--accbg:#e8f1fc;--ok:#30a14e;--warn:#d98a00;--bad:#d93a35;--glass:rgba(245,245,247,.78);--sh:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.05)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000;--card:#1c1c1e;--tx:#f5f5f7;--tx2:#98989d;--line:#2c2c2e;--acc:#2997ff;--accbg:#0b2236;--ok:#32d74b;--warn:#ffb340;--bad:#ff6961;--glass:rgba(0,0,0,.72);--sh:none}}
+:root[data-theme="dark"]{--bg:#000;--card:#1c1c1e;--tx:#f5f5f7;--tx2:#98989d;--line:#2c2c2e;--acc:#2997ff;--accbg:#0b2236;--ok:#32d74b;--warn:#ffb340;--bad:#ff6961;--glass:rgba(0,0,0,.72);--sh:none}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px);transition:background .3s,color .3s}
+header{position:sticky;top:0;z-index:10;background:var(--glass);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-bottom:1px solid var(--line)}
+.bar{max-width:1100px;margin:auto;padding:12px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.logo{font-weight:700;font-size:17px;letter-spacing:-.02em}.logo span{color:var(--acc)}
+nav{display:flex;gap:4px;margin-left:8px;overflow-x:auto}
+nav button{background:none;border:0;color:var(--tx2);font:inherit;padding:7px 14px;border-radius:980px;cursor:pointer;transition:all .2s ease;white-space:nowrap}
+nav button:hover{color:var(--tx)}nav button.on{background:var(--accbg);color:var(--acc);font-weight:600}
+.sp{flex:1}
+select,input[type=text],textarea{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px;transition:border .2s,box-shadow .2s;max-width:100%}
+select[multiple]{width:100%;height:130px;padding:6px}
+select:focus,input:focus,textarea:focus,button:focus-visible{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--accbg)}
+.ic{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--tx);cursor:pointer;display:grid;place-items:center;transition:all .2s ease}.ic:hover{transform:scale(1.06)}
+main{max-width:1100px;margin:auto;padding:32px 24px 16px}
+h1{font-size:32px;letter-spacing:-.03em;margin:0 0 4px}.sub{color:var(--tx2);margin:0 0 24px}
+section{display:none}section.on{display:block;animation:in .35s ease}
+@keyframes in{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:16px}
+.card{background:var(--card);border-radius:18px;padding:22px;box-shadow:var(--sh);border:1px solid var(--line);margin-bottom:16px}
+.grid .card{margin:0}.k{color:var(--tx2);font-size:13px}.v{font-size:30px;font-weight:700;letter-spacing:-.03em}
+h2{font-size:18px;margin:0 0 14px;letter-spacing:-.01em}
+.two{display:grid;grid-template-columns:2fr 1fr;gap:16px}.two .card{margin:0}
+.chart{display:flex;align-items:flex-end;gap:10px;height:160px}
+.chart div{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end;font-size:12px;color:var(--tx2)}
+.chart i{width:100%;background:var(--acc);border-radius:8px 8px 4px 4px;opacity:.85;min-height:3px;transition:height .6s ease}
+.rank{list-style:none;margin:0;padding:0}.rank li{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)}.rank li:last-child{border:0}
+.tools,.form{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}.tools input{flex:1;min-width:180px}.form input{flex:1;min-width:140px}
+.tw{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:640px}
+th{text-align:left;font-weight:500;color:var(--tx2);font-size:13px;padding:10px 12px;border-bottom:1px solid var(--line)}
+td{padding:12px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border:0}
+.tag{display:inline-block;padding:2px 10px;border-radius:980px;font-size:12px;font-weight:600;background:var(--accbg);color:var(--acc)}
+.tag.ban,.tag.tempban{background:rgba(217,58,53,.12);color:var(--bad)}.tag.warn,.tag.delwarn{background:rgba(217,138,0,.14);color:var(--warn)}.tag.unban{background:rgba(48,161,78,.14);color:var(--ok)}.tag.command,.tag.lock,.tag.unlock,.tag.noteadd,.tag.removenote{background:rgba(110,110,115,.15);color:var(--tx2)}
+.pg{display:flex;justify-content:space-between;align-items:center;padding-top:14px;color:var(--tx2)}
+.btn{background:var(--acc);color:#fff;border:0;border-radius:980px;padding:9px 20px;font:inherit;font-weight:600;cursor:pointer;transition:all .2s ease}.btn:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn.g{background:var(--accbg);color:var(--acc)}.btn.r{background:rgba(217,58,53,.12);color:var(--bad)}.btn.s{padding:5px 14px;font-size:13px}
+.muted{color:var(--tx2)}.lbl{display:block;font-weight:600;margin:14px 0 6px}
+.trow{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+textarea{width:100%;min-height:80px;resize:vertical}
+.it{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}.it:last-child{border:0}
+#login{min-height:100vh;display:grid;place-items:center;padding:24px}
+#login .card{max-width:380px;text-align:center;padding:40px 32px}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);background:var(--tx);color:var(--bg);padding:11px 20px;border-radius:980px;opacity:0;pointer-events:none;transition:all .3s ease;font-weight:500;z-index:20}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+footer{max-width:1100px;margin:auto;padding:24px;color:var(--tx2);font-size:13px;text-align:center}
+@media(max-width:760px){.two{grid-template-columns:1fr}h1{font-size:26px}main{padding:22px 16px}.bar{padding:10px 16px}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <div class="card">
+    <div class="logo" style="font-size:26px;margin-bottom:6px">BIG<span>works</span></div>
+    <p class="muted" style="margin:0 0 24px">Panel privado de HybridBOT</p>
+    <a class="btn" id="lg" href="/auth/login" style="display:inline-block;text-decoration:none">Iniciar sesión con Discord</a>
+    <p class="muted" style="font-size:13px;margin:20px 0 0">Acceso exclusivo del propietario.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+<header><div class="bar">
+  <div class="logo">BIG<span>works</span></div>
+  <nav id="nav" aria-label="Secciones">
+    <button class="on" data-t="inicio">Resumen</button><button data-t="mod">Moderación</button><button data-t="mem">Miembros</button><button data-t="prog">Programados</button><button data-t="conf">Configuración</button>
+  </nav>
+  <div class="sp"></div>
+  <select id="srv" aria-label="Servidor"></select>
+  <button class="ic" id="th" aria-label="Cambiar tema claro u oscuro">☾</button>
+  <button class="btn g s" id="out">Salir</button>
+</div></header>
+<main>
+<section id="inicio" class="on"><h1>Resumen</h1><p class="sub">Actividad del servidor en los últimos 7 días.</p>
+  <div class="grid" id="stats"></div>
+  <div class="two"><div class="card"><h2>Acciones por día</h2><div class="chart" id="chart"></div></div><div class="card"><h2>Top moderadores</h2><ul class="rank" id="top"></ul></div></div>
+</section>
+
+<section id="mod"><h1>Moderación</h1><p class="sub">Ejecuta acciones y revisa el historial.</p>
+  <div class="card"><h2>Nueva acción</h2>
+    <div class="form">
+      <select id="ac" aria-label="Acción"><option>ban</option><option>tempban</option><option>unban</option><option>warn</option></select>
+      <input type="text" id="at" placeholder="ID del usuario" inputmode="numeric">
+      <input type="text" id="ad" placeholder="Duración (1h, 30m)" hidden>
+      <input type="text" id="ar" placeholder="Motivo">
+      <button class="btn" id="ago">Ejecutar</button>
+    </div>
+  </div>
+  <div class="tools"><input type="text" id="q" placeholder="Buscar usuario, moderador o motivo" aria-label="Buscar">
+    <select id="f" aria-label="Filtrar"><option value="">Todas</option><option>ban</option><option>tempban</option><option>unban</option><option>warn</option><option>delwarn</option><option>noteadd</option><option>removenote</option><option>lock</option><option>unlock</option><option>command</option></select></div>
+  <div class="card"><div class="tw"><table><thead><tr><th>Acción</th><th>Usuario</th><th>Moderador</th><th>Detalle</th><th>Origen</th><th>Fecha</th></tr></thead><tbody id="logs"></tbody></table></div>
+    <div class="pg"><button class="btn g s" id="pv">Anterior</button><span id="pi"></span><button class="btn g s" id="nx">Siguiente</button></div></div>
+</section>
+
+<section id="mem"><h1>Miembros</h1><p class="sub">Warns y notas de un usuario.</p>
+  <div class="form"><input type="text" id="mu" placeholder="ID del usuario" inputmode="numeric"><button class="btn" id="mgo">Buscar</button></div>
+  <div id="mr"></div>
+</section>
+
+<section id="prog"><h1>Programados</h1><p class="sub">Tempbans y roles temporales pendientes.</p><div class="card" id="pl"></div></section>
+
+<section id="conf"><h1>Configuración</h1><p class="sub">Roles de seguridad, bienvenida y auto-roles.</p>
+  <div class="card"><h2>Roles de seguridad</h2>
+    <label class="lbl" for="s_admin">Admin</label><select id="s_admin" multiple></select>
+    <label class="lbl" for="s_manager">Manager</label><select id="s_manager" multiple></select>
+    <label class="lbl" for="s_staff">Staff</label><select id="s_staff" multiple></select></div>
+  <div class="card"><h2>Bienvenida</h2>
+    <label class="lbl" for="wc">Canal</label><select id="wc"></select>
+    <label class="lbl" for="wm">Mensaje</label><textarea id="wm" placeholder="Bienvenido {member} a {server}"></textarea>
+    <p class="muted" style="font-size:13px;margin:6px 0 0">Variables: {member}, {membercount}, {server}</p></div>
+  <div class="card"><h2>Auto-roles</h2>
+    <label class="lbl" for="s_join">Roles al unirse</label><select id="s_join" multiple></select>
+    <label class="lbl">Roles con retraso</label><div id="tm"></div><button class="btn g s" id="tadd">Agregar rol temporal</button></div>
+  <button class="btn" id="save">Guardar cambios</button>
+</section>
+</main>
+<footer>© 2026 BIGworks. Todos los derechos reservados.</footer>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+const API_BASE=""; // mismo dominio que la API (Render)
+const $=s=>document.querySelector(s);
+const esc=t=>String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=d=>{if(!d)return"—";const x=new Date(d);return isNaN(x)?esc(d):x.toLocaleString("es",{dateStyle:"short",timeStyle:"short"})};
+let G=null,roles=[],chans=[],page=1,tab="inicio",timed=[],T;
+function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(T);T=setTimeout(()=>t.classList.remove("on"),2600)}
+async function api(p,o={}){
+  const h=o.body?{"Content-Type":"application/json"}:{};
+  const r=await fetch(API_BASE+p,{credentials:"include",headers:h,...o});
+  let j={};try{j=await r.json()}catch(e){}
+  if(r.status===401||r.status===403&&p==="/api/me"){showLogin();throw new Error("Sesión no válida")}
+  if(!r.ok||j.ok===false)throw new Error(j.error||"Error "+r.status);
+  return j.data;
+}
+const guard=f=>async(...a)=>{try{await f(...a)}catch(e){if(e.message!=="Sesión no válida")toast(e.message)}};
+function showLogin(){$("#login").hidden=false;$("#app").hidden=true;$("#lg").href=API_BASE+"/auth/login"}
+const rn=id=>(roles.find(r=>r.id===id)||{}).name||id;
+const opts=(arr,sel=[],empty)=>(empty?`<option value="">${empty}</option>`:"")+arr.map(x=>`<option value="${x.id}"${sel.includes(x.id)?" selected":""}>${esc(x.name)}</option>`).join("");
+const multi=id=>[...$(id).selectedOptions].map(o=>o.value);
+
+// Navegación
+$("#nav").onclick=e=>{const b=e.target.closest("button");if(!b)return;
+  document.querySelectorAll("#nav button,section").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");tab=b.dataset.t;$("#"+tab).classList.add("on");load()};
+const loaders={inicio:loadOverview,mod:loadLogs,mem:()=>{},prog:loadSched,conf:loadSettings};
+const load=guard(async()=>{if(G)await loaders[tab]()});
+
+// Servidores
+async function boot(){
+  try{await api("/api/me")}catch(e){return}
+  $("#login").hidden=true;$("#app").hidden=false;
+  const gs=await api("/api/guilds");
+  $("#srv").innerHTML=gs.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join("");
+  await changeGuild();
+}
+const changeGuild=guard(async()=>{
+  G=$("#srv").value;if(!G)return;page=1;
+  [roles,chans]=await Promise.all([api(`/api/guilds/${G}/roles`),api(`/api/guilds/${G}/channels`)]);
+  $("#mr").innerHTML="";await loaders[tab]();
+});
+$("#srv").onchange=changeGuild;
+
+// Resumen
+async function loadOverview(){
+  const d=await api(`/api/guilds/${G}/overview`);
+  const s=[["Miembros",d.member_count],["Bans",d.total_bans],["Warns",d.total_warns],["Comandos (7d)",d.commands_7d],["Tempbans activos",d.tempbans_pending],["Roles programados",d.timed_roles_pending]];
+  $("#stats").innerHTML=s.map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("");
+  const a=d.actions_per_day,mx=Math.max(1,...a.map(x=>x.count));
+  $("#chart").innerHTML=a.length?a.map(x=>`<div><span>${x.count}</span><i style="height:${x.count/mx*100}%"></i><span>${esc(x.date.slice(5))}</span></div>`).join(""):'<span class="muted">Sin actividad</span>';
+  $("#top").innerHTML=d.top_moderators.length?d.top_moderators.map(m=>`<li><span>${esc(m.name)}</span><b>${m.count}</b></li>`).join(""):'<li class="muted">Sin datos</li>';
+}
+
+// Moderación
+async function loadLogs(){
+  const p=new URLSearchParams({page,limit:15});
+  if($("#f").value)p.set("action",$("#f").value);if($("#q").value)p.set("search",$("#q").value);
+  const d=await api(`/api/guilds/${G}/modlogs?${p}`);
+  $("#logs").innerHTML=d.items.length?d.items.map(l=>`<tr><td><span class="tag ${esc(l.action)}">${esc(l.action)}</span></td><td>${esc(l.target_name||"—")}</td><td>${esc(l.moderator_name||"—")}</td><td>${esc(l.reason||l.command_used||"—")}${l.duration?` <span class="muted">(${esc(l.duration)})</span>`:""}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmt(l.timestamp)}</td></tr>`).join(""):'<tr><td colspan="6" class="muted">Sin resultados</td></tr>';
+  $("#pi").textContent=`Página ${d.page} de ${d.pages}`;$("#pv").disabled=d.page<=1;$("#nx").disabled=d.page>=d.pages;
+}
+$("#pv").onclick=()=>{page--;load()};$("#nx").onclick=()=>{page++;load()};
+let qt;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{page=1;load()},350)};$("#f").onchange=()=>{page=1;load()};
+$("#ac").onchange=()=>{$("#ad").hidden=$("#ac").value!=="tempban"};
+$("#ago").onclick=guard(async()=>{
+  const a=$("#ac").value,t=$("#at").value.trim();
+  if(!/^\d{15,22}$/.test(t))throw new Error("ID de usuario inválido");
+  if(["ban","tempban"].includes(a)&&!confirm(`¿Confirmas ${a} a ${t}?`))return;
+  const body={target_id:t,reason:$("#ar").value||"Sin motivo"};if(a==="tempban")body.duration=$("#ad").value.trim();
+  await api(`/api/guilds/${G}/actions/${a}`,{method:"POST",body:JSON.stringify(body)});
+  toast("Acción ejecutada");$("#at").value=$("#ar").value="";page=1;loadLogs();
+});
+
+// Miembros
+async function loadMember(){
+  const u=$("#mu").value.trim();if(!/^\d{15,22}$/.test(u))throw new Error("ID de usuario inválido");
+  const d=await api(`/api/guilds/${G}/members/${u}/moderation`);
+  const w=d.warns||[],n=d.notes||[];
+  $("#mr").innerHTML=`<div class="card"><h2>Warns (${w.length})</h2>${w.length?w.map(x=>`<div class="it"><div><b>#${x.id}</b> ${esc(x.reason)}<div class="muted">${fmt(x.timestamp)}</div></div><button class="btn r s" data-w="${x.id}">Eliminar</button></div>`).join(""):'<span class="muted">Sin warns</span>'}</div>
+  <div class="card"><h2>Notas (${n.length})</h2>${n.length?n.map(x=>`<div class="it"><div><b>#${x.id}</b> ${esc(x.content)}<div class="muted">${fmt(x.timestamp)}</div></div><button class="btn r s" data-n="${x.id}">Eliminar</button></div>`).join(""):'<span class="muted">Sin notas</span>'}
+  <div class="form" style="margin:14px 0 0"><input type="text" id="nn" placeholder="Nueva nota"><button class="btn" id="nadd">Agregar</button></div></div>`;
+  $("#mr").dataset.u=u;
+}
+$("#mgo").onclick=guard(loadMember);
+$("#mr").onclick=guard(async e=>{
+  const u=$("#mr").dataset.u,b=e.target.closest("button");if(!b)return;
+  if(b.dataset.w){if(!confirm("¿Eliminar warn?"))return;await api(`/api/guilds/${G}/members/${u}/warns/${b.dataset.w}`,{method:"DELETE"})}
+  else if(b.dataset.n){await api(`/api/guilds/${G}/members/${u}/notes/${b.dataset.n}`,{method:"DELETE"})}
+  else if(b.id==="nadd"){const c=$("#nn").value.trim();if(!c)throw new Error("Escribe la nota");await api(`/api/guilds/${G}/members/${u}/notes`,{method:"POST",body:JSON.stringify({content:c})})}
+  else return;
+  await loadMember();toast("Listo");
+});
+
+// Programados
+async function loadSched(){
+  const d=await api(`/api/guilds/${G}/scheduled`);
+  $("#pl").innerHTML=d.length?d.map(x=>`<div class="it"><div><span class="tag ${x.type==="tempban"?"tempban":""}">${x.type==="tempban"?"tempban":"rol"}</span> Usuario <b>${esc(x.user_id)}</b>${x.role_id?` · ${esc(rn(x.role_id))}`:""}<div class="muted">Se ejecuta: ${fmt(x.execute_at)}</div></div><button class="btn r s" data-c="${esc(x.id)}">Cancelar</button></div>`).join(""):'<span class="muted">Nada pendiente</span>';
+}
+$("#pl").onclick=guard(async e=>{const b=e.target.closest("button");if(!b||!confirm("¿Cancelar este pendiente?"))return;
+  await api(`/api/guilds/${G}/scheduled/${b.dataset.c}`,{method:"DELETE"});toast("Cancelado");loadSched()});
+
+// Configuración
+function drawTimed(){
+  $("#tm").innerHTML=timed.map((t,i)=>`<div class="trow"><select data-i="${i}" data-k="role_id" aria-label="Rol">${opts(roles,[t.role_id])}</select><input type="text" data-i="${i}" data-k="delay" value="${esc(t.delay)}" size="6" placeholder="5m" aria-label="Retraso"><button class="btn r s" data-d="${i}">Quitar</button></div>`).join("")||'<p class="muted" style="margin:0 0 8px">Ninguno</p>';
+}
+$("#tm").oninput=e=>{const i=e.target.dataset.i;if(i!=null)timed[i][e.target.dataset.k]=e.target.value};
+$("#tm").onclick=e=>{const b=e.target.closest("[data-d]");if(b){timed.splice(+b.dataset.d,1);drawTimed()}};
+$("#tadd").onclick=()=>{timed.push({role_id:roles[0]?.id||"",delay:"5m"});drawTimed()};
+async function loadSettings(){
+  const s=await api(`/api/guilds/${G}/settings`);
+  for(const k of["admin","manager","staff"])$("#s_"+k).innerHTML=opts(roles,s[k+"_roles"]);
+  $("#s_join").innerHTML=opts(roles,s.autoroles.join);
+  $("#wc").innerHTML=opts(chans.map(c=>({id:c.id,name:"#"+c.name})),[s.welcome.channel_id],"Sin canal");
+  $("#wm").value=s.welcome.message||"";
+  timed=s.autoroles.timed.map(t=>({...t}));drawTimed();
+}
+$("#save").onclick=guard(async()=>{
+  if(timed.some(t=>!/^\d+[smh]$/i.test(t.delay)))throw new Error("Retraso inválido: usa 30s, 5m o 2h");
+  await api(`/api/guilds/${G}/settings`,{method:"PUT",body:JSON.stringify({
+    admin_roles:multi("#s_admin"),manager_roles:multi("#s_manager"),staff_roles:multi("#s_staff"),
+    welcome:{channel_id:$("#wc").value||null,message:$("#wm").value||null},
+    autoroles:{join:multi("#s_join"),timed}})});
+  toast("Cambios guardados");
+});
+
+// Sesión y tema
+$("#out").onclick=async()=>{try{await fetch(API_BASE+"/auth/logout",{method:"POST",credentials:"include"})}catch(e){}G=null;showLogin()};
+const root=document.documentElement,tb=$("#th");
+function setTheme(t){root.setAttribute("data-theme",t);tb.textContent=t==="dark"?"☀":"☾";try{localStorage.setItem("bw-theme",t)}catch(e){}}
+let sv=null;try{sv=localStorage.getItem("bw-theme")}catch(e){}
+setTheme(sv||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light"));
+tb.onclick=()=>setTheme(root.getAttribute("data-theme")==="dark"?"light":"dark");
+boot();
+</script>
+</body>
+</html>
