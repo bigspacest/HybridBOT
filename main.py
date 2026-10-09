@@ -2,8 +2,11 @@ from flask import Flask
 from threading import Thread
 from bot import bot
 from config import TOKEN, PORT
+from api import api
+from database import ensure_indexes
 
 app = Flask(__name__)
+app.register_blueprint(api)
 
 @app.route("/")
 def home():
@@ -19,7 +22,11 @@ def health():
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
+async def startup():
+    await ensure_indexes()
+
 if __name__ == "__main__":
+    bot.loop.create_task(startup())
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
     bot.run(TOKEN)
