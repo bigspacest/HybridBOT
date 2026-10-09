@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from database import guilds, timed_roles
+from database import guilds, timed_roles, log_action
 from security import Security
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -31,8 +31,7 @@ class Moderation(commands.Cog):
         cfg = await guilds.find_one({"_id": guild_id})
         if not cfg:
             return {"warns": [], "notes": []}
-        users = cfg.get("moderation", {}).get(str(user_id), {"warns": [], "notes": []})
-        return users
+        return cfg.get("moderation", {}).get(str(user_id), {"warns": [], "notes": []})
 
     async def _save_mod_data(self, guild_id: int, user_id: int, data: dict):
         await guilds.update_one(
@@ -49,6 +48,20 @@ class Moderation(commands.Cog):
         multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
         return value * multipliers[unit]
 
+    @commands.Cog.listener()
+    async def on_command_completion(self, ctx: commands.Context):
+        if ctx.command is None or not ctx.guild:
+            return
+        await log_action(
+            guild_id=ctx.guild.id,
+            action="command",
+            moderator_id=ctx.author.id,
+            moderator_name=str(ctx.author),
+            command_used=ctx.command.qualified_name,
+            channel_id=ctx.channel.id if ctx.channel else None,
+            source="discord"
+        )
+
     # ─── LOCK / UNLOCK ───────────────────────────────────────────────
     @commands.command(name="lock")
     @commands.has_permissions(manage_channels=True)
@@ -58,6 +71,8 @@ class Moderation(commands.Cog):
         overwrite.send_messages = False
         await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
         await ctx.send(f"🔒 {channel.mention} has been locked.")
+        await log_action(ctx.guild.id, "lock", ctx.author.id, str(ctx.author),
+                         channel_id=channel.id, command_used="lock", source="discord")
 
     @commands.command(name="unlock")
     @commands.has_permissions(manage_channels=True)
@@ -67,6 +82,8 @@ class Moderation(commands.Cog):
         overwrite.send_messages = None
         await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
         await ctx.send(f"🔓 {channel.mention} has been unlocked.")
+        await log_action(ctx.guild.id, "unlock", ctx.author.id, str(ctx.author),
+                         channel_id=channel.id, command_used="unlock", source="discord")
 
     # ─── BAN / TEMPBAN / UNBAN ───────────────────────────────────────
     @commands.command(name="ban")
@@ -76,6 +93,9 @@ class Moderation(commands.Cog):
             return await ctx.send("You cannot ban this member.")
         await member.ban(reason=f"{ctx.author}: {reason}")
         await ctx.send(f"🔨 **{member}** has been banned.\nReason: {reason}")
+        await log_action(ctx.guild.id, "ban", ctx.author.id, str(ctx.author),
+                         target_id=member.id, target_name=str(member),
+                         reason=reason, command_used="ban", source="discord")
 
     @commands.command(name="tempban")
     @commands.has_permissions(ban_members=True)
@@ -95,6 +115,9 @@ class Moderation(commands.Cog):
             "execute_at": execute_at
         })
         await ctx.send(f"⏳ **{member}** has been temporarily banned for `{time}`.\nReason: {reason}")
+        await log_action(ctx.guild.id, "tempban", ctx.author.id, str(ctx.author),
+                         target_id=member.id, target_name=str(member),
+                         reason=reason, duration=time, command_used="tempban", source="discord")
 
     @commands.command(name="unban")
     @commands.has_permissions(ban_members=True)
@@ -104,6 +127,9 @@ class Moderation(commands.Cog):
             await ctx.guild.unban(user)
             await timed_roles.delete_many({"type": "tempban", "guild_id": ctx.guild.id, "user_id": user_id})
             await ctx.send(f"✅ **{user}** has been unbanned.")
+            await log_action(ctx.guild.id, "unban", ctx.author.id, str(ctx.author),
+                             target_id=user_id, target_name=str(user),
+                             command_used="unban", source="discord")
         except discord.NotFound:
             await ctx.send("User not found or not banned.")
 
@@ -121,6 +147,9 @@ class Moderation(commands.Cog):
         })
         await self._save_mod_data(ctx.guild.id, member.id, data)
         await ctx.send(f"⚠️ **{member}** has been warned (#{warn_id}).\nReason: {reason}")
+        await log_action(ctx.guild.id, "warn", ctx.author.id, str(ctx.author),
+                         target_id=member.id, target_name=str(member),
+                         reason=reason, command_used="warn", source="discord")
 
     @commands.command(name="delwarn")
     @commands.has_permissions(moderate_members=True)
@@ -130,11 +159,13 @@ class Moderation(commands.Cog):
         data["warns"] = [w for w in data["warns"] if w["id"] != warn_id]
         if len(data["warns"]) == original:
             return await ctx.send("Warn ID not found.")
-        # Re-number
         for i, w in enumerate(data["warns"], 1):
             w["id"] = i
         await self._save_mod_data(ctx.guild.id, member.id, data)
         await ctx.send(f"✅ Warn #{warn_id} removed from **{member}**.")
+        await log_action(ctx.guild.id, "delwarn", ctx.author.id, str(ctx.author),
+                         target_id=member.id, target_name=str(member),
+                         reason=f"Removed warn #{warn_id}", command_used="delwarn", source="discord")
 
     @commands.command(name="warnings")
     async def warnings(self, ctx: commands.Context, member: discord.Member = None):
@@ -166,6 +197,9 @@ class Moderation(commands.Cog):
         })
         await self._save_mod_data(ctx.guild.id, member.id, data)
         await ctx.send(f"📝 Note #{note_id} added to **{member}**.")
+        await log_action(ctx.guild.id, "noteadd", ctx.author.id, str(ctx.author),
+                         target_id=member.id, target_name=str(member),
+                         reason=note, command_used="noteadd", source="discord")
 
     @commands.command(name="removenote")
     @commands.has_permissions(moderate_members=True)
@@ -179,6 +213,9 @@ class Moderation(commands.Cog):
             n["id"] = i
         await self._save_mod_data(ctx.guild.id, member.id, data)
         await ctx.send(f"✅ Note #{note_id} removed from **{member}**.")
+        await log_action(ctx.guild.id, "removenote", ctx.author.id, str(ctx.author),
+                         target_id=member.id, target_name=str(member),
+                         reason=f"Removed note #{note_id}", command_used="removenote", source="discord")
 
     @commands.command(name="viewnotes")
     @commands.has_permissions(moderate_members=True)
