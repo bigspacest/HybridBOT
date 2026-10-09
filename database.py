@@ -8,11 +8,18 @@ db = client[DATABASE_NAME]
 guilds = db.guilds
 timed_roles = db.timed_roles
 mod_logs = db.mod_logs
+reminders = db.reminders
+afk = db.afk
+snipe = db.snipe
 
 async def ensure_indexes():
     await mod_logs.create_index([("guild_id", 1), ("timestamp", -1)])
     await mod_logs.create_index([("guild_id", 1), ("action", 1)])
     await mod_logs.create_index([("guild_id", 1), ("moderator_id", 1)])
+    await mod_logs.create_index([("guild_id", 1), ("target_id", 1)])
+    await reminders.create_index([("execute_at", 1)])
+    await afk.create_index([("user_id", 1), ("guild_id", 1)])
+    await snipe.create_index([("channel_id", 1)])
 
 async def log_action(
     guild_id: int,
@@ -25,9 +32,10 @@ async def log_action(
     duration: str | None = None,
     command_used: str = "",
     channel_id: int | None = None,
-    source: str = "discord"
+    source: str = "discord",
+    extra: dict | None = None
 ):
-    await mod_logs.insert_one({
+    doc = {
         "guild_id": guild_id,
         "action": action,
         "moderator_id": moderator_id,
@@ -40,4 +48,7 @@ async def log_action(
         "channel_id": channel_id,
         "source": source,
         "timestamp": datetime.now(timezone.utc)
-    })
+    }
+    if extra:
+        doc["extra"] = extra
+    await mod_logs.insert_one(doc)
