@@ -4,14 +4,14 @@ from config import TOKEN
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True  # necesario para prefix commands
+intents.message_content = True
 
 class HybridBOT(commands.Bot):
     def __init__(self):
         super().__init__(
             command_prefix="?",
             intents=intents,
-            case_insensitive=True,   # ?Lock ?LOCK ?lock → todos funcionan
+            case_insensitive=True,
             help_command=None
         )
 
