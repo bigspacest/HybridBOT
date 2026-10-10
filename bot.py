@@ -19,19 +19,26 @@ class HybridBOT(commands.Bot):
         )
         self.start_time = None
 
-    async def setup_hook(self):
-        await ensure_indexes()
-        await ensure_panel_meta()
-        for ext in (
-            "security", "welcomer", "autoroles", "moderation",
-            "utility", "automod", "events", "scheduler", "rolepanels",
-        ):
-            try:
-                await self.load_extension(ext)
-            except Exception as e:
-                print(f"[load] {ext}: {e}")
-        await self.tree.sync()
-
+async def setup_hook(self):
+    from database import ensure_indexes, ensure_panel_meta
+    await ensure_indexes()
+    await ensure_panel_meta()
+    for ext in (
+        "security", "welcomer", "autoroles", "moderation",
+        "utility", "automod", "events", "scheduler", "rolepanels",
+        "command_control", "error_tracker", "cleanup",
+    ):
+        try:
+            await self.load_extension(ext)
+        except Exception as e:
+            print(f"[load] {ext}: {e}")
+    # reconstruir registro tras todos los cogs
+    try:
+        from command_control import build_registry
+        build_registry(self)
+    except Exception as e:
+        print(f"[registry] {e}")
+    await self.tree.sync()
     async def on_ready(self):
         if self.start_time is None:
             self.start_time = time.time()
