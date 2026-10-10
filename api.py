@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone, timedelta
@@ -8,6 +9,7 @@ from urllib.parse import urlencode
 
 import discord
 import requests
+from bson import ObjectId
 from flask import Blueprint, request, jsonify, redirect, make_response, send_file
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
@@ -15,13 +17,19 @@ from config import (
     DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, REDIRECT_URI,
     SESSION_SECRET, DASHBOARD_URL, OWNER_ID
 )
-from database import guilds, timed_roles, mod_logs, log_action
+from database import guilds, timed_roles, mod_logs, log_action, db
 
 api = Blueprint("api", __name__)
 
 serializer = URLSafeTimedSerializer(SESSION_SECRET)
 COOKIE_NAME = "hybrid_session"
-COOKIE_MAX_AGE = 86400  # 24h
+COOKIE_MAX_AGE = 86400
+
+DB_COLLECTIONS = {
+    "guilds": guilds,
+    "timed_roles": timed_roles,
+    "mod_logs": mod_logs,
+}
 
 _rate = {}
 
@@ -80,7 +88,59 @@ def _parse_duration(duration: str) -> int | None:
         return None
     return value * multipliers[unit]
 
-# ──────────────────────── Dashboard (público) ────────────────────────
+def _serialize_doc(doc: dict) -> dict:
+    """Convierte ObjectId, datetime e IDs grandes a str para JSON."""
+    out = {}
+    for k, v in doc.items():
+        if isinstance(v, ObjectId):
+            out[k] = str(v)
+        elif isinstance(v, datetime):
+            if v.tzinfo is None:
+                v = v.replace(tzinfo=timezone.utc)
+            out[k] = v.isoformat()
+        elif isinstance(v, int) and v > 10**15:
+            out[k] = str(v)
+        elif isinstance(v, dict):
+            out[k] = _serialize_doc(v)
+        elif isinstance(v, list):
+            out[k] = [
+                _serialize_doc(i) if isinstance(i, dict)
+                else (str(i) if isinstance(i, ObjectId) else i)
+                for i in v
+            ]
+        else:
+            out[k] = v
+    return out
+
+def _modlogs_filter(guild_id: int, action=None, search=None, date_from=None, date_to=None) -> dict:
+    query = {"guild_id": int(guild_id)}
+    if action:
+        query["action"] = action
+    if search:
+        safe = re.escape(search)
+        query["$or"] = [
+            {"target_name": {"$regex": safe, "$options": "i"}},
+            {"reason": {"$regex": safe, "$options": "i"}},
+            {"moderator_name": {"$regex": safe, "$options": "i"}},
+        ]
+    ts = {}
+    if date_from:
+        try:
+            ts["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            ts["$lte"] = datetime.fromisoformat(date_to).replace(
+                hour=23, minute=59, second=59, tzinfo=timezone.utc
+            )
+        except ValueError:
+            pass
+    if ts:
+        query["timestamp"] = ts
+    return query
+
+# ──────────────────────── Dashboard ────────────────────────
 @api.route("/dashboard")
 def dashboard():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
@@ -96,7 +156,7 @@ def auth_login():
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
         "scope": "identify",
-        "state": state
+        "state": state,
     }
     url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
     resp = make_response(redirect(url))
@@ -119,12 +179,12 @@ def auth_callback():
         "client_secret": DISCORD_CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI
+        "redirect_uri": REDIRECT_URI,
     }
     token_res = requests.post(
         "https://discord.com/api/oauth2/token",
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"}
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     if token_res.status_code != 200:
         return jsonify({"ok": False, "error": "Token exchange failed"}), 400
@@ -132,7 +192,7 @@ def auth_callback():
     access_token = token_res.json()["access_token"]
     user_res = requests.get(
         "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {access_token}"}
+        headers={"Authorization": f"Bearer {access_token}"},
     )
     if user_res.status_code != 200:
         return jsonify({"ok": False, "error": "Failed to fetch user"}), 400
@@ -149,7 +209,7 @@ def auth_callback():
     resp.set_cookie(
         COOKIE_NAME, session_token,
         httponly=True, secure=True, samesite="Lax",
-        max_age=COOKIE_MAX_AGE
+        max_age=COOKIE_MAX_AGE,
     )
     resp.delete_cookie("oauth_state", samesite="Lax", secure=True)
     return resp
@@ -175,7 +235,7 @@ def api_status():
         "latency_ms": round(bot.latency * 1000) if bot.latency else 0,
         "uptime_seconds": uptime,
         "guilds": len(bot.guilds),
-        "users": sum(g.member_count or 0 for g in bot.guilds)
+        "users": sum(g.member_count or 0 for g in bot.guilds),
     }})
 
 # ──────────────────────── Guilds ──────────────────────
@@ -189,7 +249,7 @@ def api_guilds():
             "id": str(g.id),
             "name": g.name,
             "icon_url": str(g.icon.url) if g.icon else None,
-            "member_count": g.member_count
+            "member_count": g.member_count,
         }
         for g in bot.guilds
     ]
@@ -237,7 +297,7 @@ def members_search(guild_id):
             results.append({
                 "id": str(m.id),
                 "name": str(m),
-                "avatar_url": str(m.display_avatar.url)
+                "avatar_url": str(m.display_avatar.url),
             })
             if len(results) >= 8:
                 break
@@ -252,9 +312,8 @@ def api_overview(guild_id):
     if not guild:
         return jsonify({"ok": False, "error": "Guild not found"}), 404
 
-    days = request.args.get("days", "7")
     try:
-        days = int(days)
+        days = int(request.args.get("days", "7"))
         if days not in (7, 30, 90):
             days = 7
     except ValueError:
@@ -269,55 +328,53 @@ def api_overview(guild_id):
         tempbans_pending = await timed_roles.count_documents({"guild_id": gid, "type": "tempban"})
         timed_roles_pending = await timed_roles.count_documents({
             "guild_id": gid,
-            "$or": [{"type": {"$exists": False}}, {"type": "role"}]
+            "$or": [{"type": {"$exists": False}}, {"type": "role"}],
         })
 
         commands_7d = await mod_logs.count_documents({
             "guild_id": gid,
             "action": "command",
-            "timestamp": {"$gte": since}
+            "timestamp": {"$gte": since},
         })
 
-        # actions_per_day (excluye command, join, leave, msgdelete)
         pipeline = [
             {"$match": {
                 "guild_id": gid,
                 "timestamp": {"$gte": since},
-                "action": {"$nin": ["command", "join", "leave", "msgdelete"]}
+                "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
             }},
             {"$group": {
                 "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
-                "count": {"$sum": 1}
+                "count": {"$sum": 1},
             }},
-            {"$sort": {"_id": 1}}
+            {"$sort": {"_id": 1}},
         ]
         actions_per_day = [
             {"date": d["_id"], "count": d["count"]}
             async for d in mod_logs.aggregate(pipeline)
         ]
 
-        # growth: joins / leaves per day
         pipeline_growth = [
             {"$match": {
                 "guild_id": gid,
                 "timestamp": {"$gte": since},
-                "action": {"$in": ["join", "leave"]}
+                "action": {"$in": ["join", "leave"]},
             }},
             {"$group": {
                 "_id": {
                     "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
-                    "action": "$action"
+                    "action": "$action",
                 },
-                "count": {"$sum": 1}
-            }}
+                "count": {"$sum": 1},
+            }},
         ]
         growth_map = {}
         async for d in mod_logs.aggregate(pipeline_growth):
             date = d["_id"]["date"]
-            action = d["_id"]["action"]
+            act = d["_id"]["action"]
             if date not in growth_map:
                 growth_map[date] = {"date": date, "joins": 0, "leaves": 0}
-            if action == "join":
+            if act == "join":
                 growth_map[date]["joins"] = d["count"]
             else:
                 growth_map[date]["leaves"] = d["count"]
@@ -326,11 +383,11 @@ def api_overview(guild_id):
         pipeline2 = [
             {"$match": {
                 "guild_id": gid,
-                "action": {"$nin": ["command", "join", "leave", "msgdelete"]}
+                "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
             }},
             {"$group": {"_id": "$moderator_name", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
-            {"$limit": 5}
+            {"$limit": 5},
         ]
         top_moderators = [
             {"name": d["_id"], "count": d["count"]}
@@ -346,7 +403,7 @@ def api_overview(guild_id):
             "commands_7d": commands_7d,
             "actions_per_day": actions_per_day,
             "growth": growth,
-            "top_moderators": top_moderators
+            "top_moderators": top_moderators,
         }
 
     return jsonify({"ok": True, "data": run_async(_overview())})
@@ -368,7 +425,7 @@ def get_settings(guild_id):
                 "welcome": {"channel_id": None, "message": None},
                 "autoroles": {"join": [], "timed": []},
                 "automod": DEFAULT_AUTOMOD.copy(),
-                "warn_punishment": DEFAULT_WARN_PUNISHMENT.copy()
+                "warn_punishment": DEFAULT_WARN_PUNISHMENT.copy(),
             }
         return {
             "admin_roles": [str(r) for r in cfg.get("admin_roles", [])],
@@ -376,17 +433,17 @@ def get_settings(guild_id):
             "staff_roles": [str(r) for r in cfg.get("staff_roles", [])],
             "welcome": {
                 "channel_id": str(cfg["welcome"]["channel_id"]) if cfg.get("welcome", {}).get("channel_id") else None,
-                "message": cfg.get("welcome", {}).get("message")
+                "message": cfg.get("welcome", {}).get("message"),
             },
             "autoroles": {
                 "join": [str(r) for r in cfg.get("autoroles", {}).get("join", [])],
                 "timed": [
                     {"role_id": str(t["role_id"]), "delay": t["delay"]}
                     for t in cfg.get("autoroles", {}).get("timed", [])
-                ]
+                ],
             },
             "automod": cfg.get("automod") or DEFAULT_AUTOMOD.copy(),
-            "warn_punishment": cfg.get("warn_punishment") or DEFAULT_WARN_PUNISHMENT.copy()
+            "warn_punishment": cfg.get("warn_punishment") or DEFAULT_WARN_PUNISHMENT.copy(),
         }
     return jsonify({"ok": True, "data": run_async(_get())})
 
@@ -426,7 +483,7 @@ def put_settings(guild_id):
                     pass
             update["welcome"] = {
                 "channel_id": channel_id,
-                "message": w.get("message")
+                "message": w.get("message"),
             }
 
         if "autoroles" in body and isinstance(body["autoroles"], dict):
@@ -458,7 +515,7 @@ def put_settings(guild_id):
             update["automod"] = {
                 "anti_spam": bool(am.get("anti_spam")),
                 "anti_links": bool(am.get("anti_links")),
-                "bad_words": [str(w)[:50] for w in bad_words[:50]]
+                "bad_words": [str(w)[:50] for w in bad_words[:50]],
             }
 
         if "warn_punishment" in body and isinstance(body["warn_punishment"], dict):
@@ -502,35 +559,12 @@ def api_modlogs(guild_id):
     date_to = request.args.get("to")
 
     async def _query():
-        query = {"guild_id": int(guild_id)}
-        if action:
-            query["action"] = action
+        query = _modlogs_filter(int(guild_id), action, search, date_from, date_to)
         if moderator_id:
             try:
                 query["moderator_id"] = int(moderator_id)
             except ValueError:
                 pass
-        if search:
-            query["$or"] = [
-                {"target_name": {"$regex": search, "$options": "i"}},
-                {"reason": {"$regex": search, "$options": "i"}},
-                {"moderator_name": {"$regex": search, "$options": "i"}}
-            ]
-        ts_filter = {}
-        if date_from:
-            try:
-                ts_filter["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-        if date_to:
-            try:
-                ts_filter["$lte"] = datetime.fromisoformat(date_to).replace(
-                    hour=23, minute=59, second=59, tzinfo=timezone.utc
-                )
-            except ValueError:
-                pass
-        if ts_filter:
-            query["timestamp"] = ts_filter
 
         total = await mod_logs.count_documents(query)
         cursor = mod_logs.find(query).sort("timestamp", -1).skip((page - 1) * limit).limit(limit)
@@ -548,16 +582,75 @@ def api_modlogs(guild_id):
                 "command_used": doc.get("command_used"),
                 "channel_id": str(doc["channel_id"]) if doc.get("channel_id") else None,
                 "source": doc.get("source", "discord"),
-                "timestamp": doc["timestamp"].isoformat()
+                "timestamp": doc["timestamp"].isoformat(),
             })
         return {
             "items": items,
             "total": total,
             "page": page,
-            "pages": max(1, (total + limit - 1) // limit)
+            "pages": max(1, (total + limit - 1) // limit),
         }
 
     return jsonify({"ok": True, "data": run_async(_query())})
+
+@api.route("/api/guilds/<guild_id>/modlogs", methods=["DELETE"])
+@require_owner
+@rate_limit(max_calls=10, period=60)
+def delete_modlogs(guild_id):
+    body = request.get_json(silent=True) or {}
+    gid = int(guild_id)
+
+    async def _delete():
+        deleted = 0
+
+        # Body A: ids específicos
+        if "ids" in body:
+            ids = body["ids"]
+            if not isinstance(ids, list) or len(ids) == 0:
+                return {"error": "ids must be a non-empty list", "code": 400}
+            if len(ids) > 500:
+                return {"error": "max 500 ids", "code": 400}
+            object_ids = []
+            for i in ids:
+                try:
+                    object_ids.append(ObjectId(str(i)))
+                except Exception:
+                    return {"error": f"invalid id: {i}", "code": 400}
+            res = await mod_logs.delete_many({
+                "_id": {"$in": object_ids},
+                "guild_id": gid,
+            })
+            deleted = res.deleted_count
+
+        # Body B: borrar por filtros
+        elif body.get("all") is True:
+            if body.get("confirm") != "ELIMINAR":
+                return {"error": 'confirm must be "ELIMINAR"', "code": 400}
+            filters = body.get("filters") or {}
+            query = _modlogs_filter(
+                gid,
+                action=filters.get("action"),
+                search=filters.get("search"),
+                date_from=filters.get("from"),
+                date_to=filters.get("to"),
+            )
+            res = await mod_logs.delete_many(query)
+            deleted = res.deleted_count
+        else:
+            return {"error": "provide ids or {all: true, confirm: ELIMINAR}", "code": 400}
+
+        # Auditoría
+        await log_action(
+            gid, "logs_cleared", int(OWNER_ID), "Dashboard",
+            reason=f"Deleted {deleted} mod log(s)",
+            source="dashboard",
+        )
+        return {"deleted": deleted}
+
+    result = run_async(_delete())
+    if "error" in result:
+        return jsonify({"ok": False, "error": result["error"]}), result.get("code", 400)
+    return jsonify({"ok": True, "data": result})
 
 # ──────────────────────── Member moderation ───────────
 @api.route("/api/guilds/<guild_id>/members/<user_id>/moderation")
@@ -586,7 +679,7 @@ def delete_warn(guild_id, user_id, warn_id):
             w["id"] = i
         await guilds.update_one(
             {"_id": int(guild_id)},
-            {"$set": {f"moderation.{user_id}": data}}
+            {"$set": {f"moderation.{user_id}": data}},
         )
         return True
 
@@ -611,12 +704,12 @@ def add_note(guild_id, user_id):
             "id": note_id,
             "content": content,
             "moderator": int(OWNER_ID),
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         await guilds.update_one(
             {"_id": int(guild_id)},
             {"$set": {f"moderation.{user_id}": data}},
-            upsert=True
+            upsert=True,
         )
         return note_id
 
@@ -639,7 +732,7 @@ def delete_note(guild_id, user_id, note_id):
             n["id"] = i
         await guilds.update_one(
             {"_id": int(guild_id)},
-            {"$set": {f"moderation.{user_id}": data}}
+            {"$set": {f"moderation.{user_id}": data}},
         )
         return True
 
@@ -676,7 +769,7 @@ def api_scheduled(guild_id):
                 "user_id": str(uid) if uid else None,
                 "user_name": user_name,
                 "role_id": str(doc["role_id"]) if doc.get("role_id") else None,
-                "execute_at": doc["execute_at"].isoformat()
+                "execute_at": doc["execute_at"].isoformat(),
             })
         return items
     return jsonify({"ok": True, "data": run_async(_get())})
@@ -684,8 +777,6 @@ def api_scheduled(guild_id):
 @api.route("/api/guilds/<guild_id>/scheduled/<doc_id>", methods=["DELETE"])
 @require_owner
 def delete_scheduled(guild_id, doc_id):
-    from bson import ObjectId
-
     async def _del():
         try:
             res = await timed_roles.delete_one({"_id": ObjectId(doc_id), "guild_id": int(guild_id)})
@@ -697,6 +788,105 @@ def delete_scheduled(guild_id, doc_id):
     if not ok:
         return jsonify({"ok": False, "error": "Not found"}), 404
     return jsonify({"ok": True, "data": None})
+
+# ──────────────────────── DB Explorer ─────────────────
+@api.route("/api/guilds/<guild_id>/db")
+@require_owner
+def api_db_overview(guild_id):
+    gid = int(guild_id)
+
+    async def _get():
+        collections = []
+
+        # guilds: 0 o 1 doc con _id == guild_id
+        g_count = await guilds.count_documents({"_id": gid})
+        collections.append({"name": "guilds", "count": g_count})
+
+        tr_count = await timed_roles.count_documents({"guild_id": gid})
+        collections.append({"name": "timed_roles", "count": tr_count})
+
+        ml_count = await mod_logs.count_documents({"guild_id": gid})
+        collections.append({"name": "mod_logs", "count": ml_count})
+
+        result = {"collections": collections}
+
+        try:
+            stats = await db.command("dbstats")
+            result["storage"] = {
+                "used_bytes": int(stats.get("dataSize", 0)),
+                "limit_bytes": None,
+            }
+        except Exception:
+            pass
+
+        return result
+
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+@api.route("/api/guilds/<guild_id>/db/<collection>")
+@require_owner
+def api_db_collection(guild_id, collection):
+    if collection not in DB_COLLECTIONS:
+        return jsonify({"ok": False, "error": "Collection not found"}), 404
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    try:
+        limit = min(50, max(1, int(request.args.get("limit", 20))))
+    except ValueError:
+        limit = 20
+
+    gid = int(guild_id)
+    coll = DB_COLLECTIONS[collection]
+
+    async def _get():
+        if collection == "guilds":
+            query = {"_id": gid}
+        else:
+            query = {"guild_id": gid}
+
+        total = await coll.count_documents(query)
+        cursor = coll.find(query).skip((page - 1) * limit).limit(limit)
+        items = []
+        async for doc in cursor:
+            items.append(_serialize_doc(doc))
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "pages": max(1, (total + limit - 1) // limit),
+        }
+
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+@api.route("/api/guilds/<guild_id>/db/<collection>/<doc_id>", methods=["DELETE"])
+@require_owner
+@rate_limit(max_calls=20, period=60)
+def api_db_delete_doc(guild_id, collection, doc_id):
+    if collection == "guilds":
+        return jsonify({"ok": False, "error": "Cannot delete guild config documents"}), 403
+    if collection not in ("timed_roles", "mod_logs"):
+        return jsonify({"ok": False, "error": "Collection not found"}), 404
+
+    coll = DB_COLLECTIONS[collection]
+    gid = int(guild_id)
+
+    async def _del():
+        try:
+            oid = ObjectId(doc_id)
+        except Exception:
+            return {"error": "Invalid document id", "code": 400}
+        res = await coll.delete_one({"_id": oid, "guild_id": gid})
+        if res.deleted_count == 0:
+            return {"error": "Not found", "code": 404}
+        return {"deleted": 1}
+
+    result = run_async(_del())
+    if "error" in result:
+        return jsonify({"ok": False, "error": result["error"]}), result.get("code", 400)
+    return jsonify({"ok": True, "data": result})
 
 # ──────────────────────── Actions ─────────────────────
 @api.route("/api/guilds/<guild_id>/actions/<action>", methods=["POST"])
@@ -724,7 +914,6 @@ def api_action(guild_id, action):
     async def _execute():
         owner = await bot.fetch_user(int(OWNER_ID))
 
-        # ── Channel actions ──
         if action in ("lock", "unlock", "slowmode", "purge"):
             if not channel_id:
                 return {"error": "channel_id required"}
@@ -770,7 +959,6 @@ def api_action(guild_id, action):
             except (discord.Forbidden, discord.HTTPException) as e:
                 return {"error": str(e)}
 
-        # ── Member actions ──
         if action == "unban":
             if not target_id:
                 return {"error": "target_id required"}
@@ -778,7 +966,7 @@ def api_action(guild_id, action):
                 user = await bot.fetch_user(int(target_id))
                 await guild.unban(user, reason=f"[Dashboard] {reason}")
                 await timed_roles.delete_many({
-                    "type": "tempban", "guild_id": int(guild_id), "user_id": int(target_id)
+                    "type": "tempban", "guild_id": int(guild_id), "user_id": int(target_id),
                 })
                 await log_action(int(guild_id), "unban", int(OWNER_ID), str(owner),
                                  target_id=int(target_id), target_name=str(user),
@@ -824,7 +1012,7 @@ def api_action(guild_id, action):
                     "type": "tempban",
                     "guild_id": int(guild_id),
                     "user_id": int(target_id),
-                    "execute_at": datetime.now(timezone.utc) + timedelta(seconds=secs)
+                    "execute_at": datetime.now(timezone.utc) + timedelta(seconds=secs),
                 })
                 name = str(member) if member else str(target_id)
                 await log_action(int(guild_id), "tempban", int(OWNER_ID), str(owner),
@@ -874,12 +1062,12 @@ def api_action(guild_id, action):
                     "id": warn_id,
                     "reason": reason,
                     "moderator": int(OWNER_ID),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 await guilds.update_one(
                     {"_id": int(guild_id)},
                     {"$set": {f"moderation.{member.id}": data}},
-                    upsert=True
+                    upsert=True,
                 )
                 await log_action(int(guild_id), "warn", int(OWNER_ID), str(owner),
                                  target_id=member.id, target_name=str(member),
@@ -943,7 +1131,7 @@ def send_embed(guild_id):
             if author and isinstance(author, dict) and author.get("name"):
                 embed.set_author(
                     name=str(author["name"])[:256],
-                    icon_url=author.get("icon_url") or None
+                    icon_url=author.get("icon_url") or None,
                 )
 
             if embed_data.get("thumbnail"):
@@ -955,7 +1143,7 @@ def send_embed(guild_id):
             if footer and isinstance(footer, dict) and footer.get("text"):
                 embed.set_footer(
                     text=str(footer["text"])[:2048],
-                    icon_url=footer.get("icon_url") or None
+                    icon_url=footer.get("icon_url") or None,
                 )
 
             if embed_data.get("timestamp"):
@@ -995,8 +1183,9 @@ def send_embed(guild_id):
         owner = await bot.fetch_user(int(OWNER_ID))
         await log_action(
             int(guild_id), "embed", int(OWNER_ID), str(owner),
-            channel_id=channel.id, reason=(content or (embed_data or {}).get("title") or "")[:100],
-            source="dashboard"
+            channel_id=channel.id,
+            reason=(content or (embed_data or {}).get("title") or "")[:100],
+            source="dashboard",
         )
         return {"ok": True}
 
