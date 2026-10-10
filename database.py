@@ -17,6 +17,8 @@ async def ensure_indexes():
     await mod_logs.create_index([("guild_id", 1), ("action", 1)])
     await mod_logs.create_index([("guild_id", 1), ("moderator_id", 1)])
     await mod_logs.create_index([("guild_id", 1), ("target_id", 1)])
+    await timed_roles.create_index([("guild_id", 1), ("execute_at", 1)])
+    await timed_roles.create_index([("type", 1), ("execute_at", 1)])
     await reminders.create_index([("execute_at", 1)])
     await afk.create_index([("user_id", 1), ("guild_id", 1)])
     await snipe.create_index([("channel_id", 1)])
@@ -33,7 +35,7 @@ async def log_action(
     command_used: str = "",
     channel_id: int | None = None,
     source: str = "discord",
-    extra: dict | None = None
+    extra: dict | None = None,
 ):
     doc = {
         "guild_id": guild_id,
@@ -47,7 +49,7 @@ async def log_action(
         "command_used": command_used,
         "channel_id": channel_id,
         "source": source,
-        "timestamp": datetime.now(timezone.utc)
+        "timestamp": datetime.now(timezone.utc),
     }
     if extra:
         doc["extra"] = extra
