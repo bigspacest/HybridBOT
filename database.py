@@ -44,9 +44,18 @@ async def ensure_indexes():
     await reminders.create_index([("execute_at", 1)])
     await afk.create_index([("user_id", 1), ("guild_id", 1)])
     await snipe.create_index([("channel_id", 1)])
-    # sin TTL fijo: manda retención configurable
-    await panel_audit.create_index([("timestamp", 1)])
+
+    # Quitar TTL antiguo (90 días) si existe; la retención la maneja cleanup.py
+    try:
+        await panel_audit.drop_index("timestamp_1")
+    except Exception:
+        pass
+    try:
+        await panel_audit.create_index([("timestamp", 1)], name="timestamp_1")
+    except Exception:
+        pass
     await panel_audit.create_index([("event", 1), ("timestamp", -1)])
+
     await scheduled_messages.create_index([("send_at", 1)])
     await scheduled_messages.create_index([("guild_id", 1), ("send_at", 1)])
     await role_panels.create_index([("guild_id", 1)])
