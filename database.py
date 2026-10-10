@@ -14,6 +14,7 @@ snipe = db.snipe
 panel_audit = db.panel_audit
 panel_meta = db.panel_meta
 scheduled_messages = db.scheduled_messages
+role_panels = db.role_panels
 
 async def ensure_indexes():
     await mod_logs.create_index([("guild_id", 1), ("timestamp", -1)])
@@ -25,11 +26,11 @@ async def ensure_indexes():
     await reminders.create_index([("execute_at", 1)])
     await afk.create_index([("user_id", 1), ("guild_id", 1)])
     await snipe.create_index([("channel_id", 1)])
-    # panel_audit: TTL 90 días
     await panel_audit.create_index([("timestamp", 1)], expireAfterSeconds=90 * 24 * 3600)
     await panel_audit.create_index([("event", 1), ("timestamp", -1)])
     await scheduled_messages.create_index([("send_at", 1)])
     await scheduled_messages.create_index([("guild_id", 1), ("send_at", 1)])
+    await role_panels.create_index([("guild_id", 1)])
 
 async def ensure_panel_meta():
     existing = await panel_meta.find_one({"_id": "settings"})
