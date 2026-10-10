@@ -19,6 +19,7 @@ from config import (
 from database import (
     guilds, timed_roles, mod_logs, log_action, db,
     panel_audit, panel_meta, scheduled_messages, role_panels, write_audit,
+    bot_errors, DEFAULT_RETENTION,
 )
 
 api = Blueprint("api", __name__)
@@ -232,10 +233,12 @@ def _audit_category(method: str, path: str) -> str | None:
     if method in ("POST", "PUT"):
         if "/actions/" in path:
             return "action"
-        if "/settings" in path:
+        if "/settings" in path or "/commands/settings" in path:
             return "settings"
         if "/embeds" in path or "/rolepanels" in path or "/scheduled-messages" in path:
             return "embed"
+        if "/retention" in path:
+            return "delete"
     return None
 
 
@@ -651,8 +654,7 @@ def api_overview(guild_id):
 
         async def _count(action, start, end):
             return await mod_logs.count_documents({
-                "guild_id": gid,
-                "action": action,
+                "guild_id": gid, "action": action,
                 "timestamp": {"$gte": start, "$lt": end},
             })
 
@@ -674,70 +676,61 @@ def api_overview(guild_id):
             "commands": {"now": cmds_now, "prev": cmds_prev},
         }
 
-        pipeline_action = [
-            {"$match": {
-                "guild_id": gid,
-                "timestamp": {"$gte": since, "$lt": now},
-                "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
-            }},
-            {"$group": {"_id": "$action", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-        ]
         by_action = [
             {"action": d["_id"], "count": d["count"]}
-            async for d in mod_logs.aggregate(pipeline_action)
+            async for d in mod_logs.aggregate([
+                {"$match": {
+                    "guild_id": gid,
+                    "timestamp": {"$gte": since, "$lt": now},
+                    "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
+                }},
+                {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+            ])
         ]
 
-        # actions_per_day con tz
         actions_per_day = []
         try:
-            pipeline_day = [
-                {"$match": {
-                    "guild_id": gid,
-                    "timestamp": {"$gte": since, "$lt": now},
-                    "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
-                }},
-                {"$project": {
-                    "local": {
-                        "$dateAdd": {
-                            "startDate": "$timestamp",
-                            "unit": "minute",
-                            "amount": tz_offset,
-                        }
-                    }
-                }},
-                {"$group": {
-                    "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$local"}},
-                    "count": {"$sum": 1},
-                }},
-                {"$sort": {"_id": 1}},
-            ]
             actions_per_day = [
                 {"date": d["_id"], "count": d["count"]}
-                async for d in mod_logs.aggregate(pipeline_day)
+                async for d in mod_logs.aggregate([
+                    {"$match": {
+                        "guild_id": gid,
+                        "timestamp": {"$gte": since, "$lt": now},
+                        "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
+                    }},
+                    {"$project": {
+                        "local": {"$dateAdd": {
+                            "startDate": "$timestamp", "unit": "minute", "amount": tz_offset,
+                        }}
+                    }},
+                    {"$group": {
+                        "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$local"}},
+                        "count": {"$sum": 1},
+                    }},
+                    {"$sort": {"_id": 1}},
+                ])
             ]
         except Exception:
-            pipeline_day_fb = [
-                {"$match": {
-                    "guild_id": gid,
-                    "timestamp": {"$gte": since, "$lt": now},
-                    "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
-                }},
-                {"$group": {
-                    "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
-                    "count": {"$sum": 1},
-                }},
-                {"$sort": {"_id": 1}},
-            ]
             actions_per_day = [
                 {"date": d["_id"], "count": d["count"]}
-                async for d in mod_logs.aggregate(pipeline_day_fb)
+                async for d in mod_logs.aggregate([
+                    {"$match": {
+                        "guild_id": gid,
+                        "timestamp": {"$gte": since, "$lt": now},
+                        "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
+                    }},
+                    {"$group": {
+                        "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+                        "count": {"$sum": 1},
+                    }},
+                    {"$sort": {"_id": 1}},
+                ])
             ]
 
-        # growth
         growth_map = {}
         try:
-            pipeline_growth = [
+            async for d in mod_logs.aggregate([
                 {"$match": {
                     "guild_id": gid,
                     "timestamp": {"$gte": since, "$lt": now},
@@ -745,13 +738,9 @@ def api_overview(guild_id):
                 }},
                 {"$project": {
                     "action": 1,
-                    "local": {
-                        "$dateAdd": {
-                            "startDate": "$timestamp",
-                            "unit": "minute",
-                            "amount": tz_offset,
-                        }
-                    },
+                    "local": {"$dateAdd": {
+                        "startDate": "$timestamp", "unit": "minute", "amount": tz_offset,
+                    }},
                 }},
                 {"$group": {
                     "_id": {
@@ -760,8 +749,7 @@ def api_overview(guild_id):
                     },
                     "count": {"$sum": 1},
                 }},
-            ]
-            async for d in mod_logs.aggregate(pipeline_growth):
+            ]):
                 date = d["_id"]["date"]
                 act = d["_id"]["action"]
                 if date not in growth_map:
@@ -771,7 +759,7 @@ def api_overview(guild_id):
                 else:
                     growth_map[date]["leaves"] = d["count"]
         except Exception:
-            pipeline_growth_fb = [
+            async for d in mod_logs.aggregate([
                 {"$match": {
                     "guild_id": gid,
                     "timestamp": {"$gte": since, "$lt": now},
@@ -784,8 +772,7 @@ def api_overview(guild_id):
                     },
                     "count": {"$sum": 1},
                 }},
-            ]
-            async for d in mod_logs.aggregate(pipeline_growth_fb):
+            ]):
                 date = d["_id"]["date"]
                 act = d["_id"]["action"]
                 if date not in growth_map:
@@ -796,22 +783,14 @@ def api_overview(guild_id):
                     growth_map[date]["leaves"] = d["count"]
         growth = sorted(growth_map.values(), key=lambda x: x["date"])
 
-        # heatmap 7x24 (lun=0 … dom=6)
         heatmap = [[0 for _ in range(24)] for _ in range(7)]
         try:
-            pipeline_heat = [
-                {"$match": {
-                    "guild_id": gid,
-                    "timestamp": {"$gte": since, "$lt": now},
-                }},
+            async for d in mod_logs.aggregate([
+                {"$match": {"guild_id": gid, "timestamp": {"$gte": since, "$lt": now}}},
                 {"$project": {
-                    "local": {
-                        "$dateAdd": {
-                            "startDate": "$timestamp",
-                            "unit": "minute",
-                            "amount": tz_offset,
-                        }
-                    }
+                    "local": {"$dateAdd": {
+                        "startDate": "$timestamp", "unit": "minute", "amount": tz_offset,
+                    }}
                 }},
                 {"$group": {
                     "_id": {
@@ -820,8 +799,7 @@ def api_overview(guild_id):
                     },
                     "count": {"$sum": 1},
                 }},
-            ]
-            async for d in mod_logs.aggregate(pipeline_heat):
+            ]):
                 dow = d["_id"]["dow"]
                 if dow < 0:
                     dow = 6
@@ -829,19 +807,18 @@ def api_overview(guild_id):
                 if 0 <= dow <= 6 and 0 <= hour <= 23:
                     heatmap[dow][hour] = d["count"]
         except Exception:
-            cursor = mod_logs.find({
-                "guild_id": gid,
-                "timestamp": {"$gte": since, "$lt": now},
-            }, {"timestamp": 1})
-            async for doc in cursor:
+            async for doc in mod_logs.find(
+                {"guild_id": gid, "timestamp": {"$gte": since, "$lt": now}},
+                {"timestamp": 1},
+            ):
                 ts = doc["timestamp"]
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 local = ts + timedelta(minutes=tz_offset)
                 heatmap[local.weekday()][local.hour] += 1
 
-        # top_moderators + avatar
-        pipeline2 = [
+        top_moderators = []
+        async for d in mod_logs.aggregate([
             {"$match": {
                 "guild_id": gid,
                 "timestamp": {"$gte": since, "$lt": now},
@@ -853,15 +830,11 @@ def api_overview(guild_id):
             }},
             {"$sort": {"count": -1}},
             {"$limit": 5},
-        ]
-        top_moderators = []
-        async for d in mod_logs.aggregate(pipeline2):
-            mid = d["_id"].get("id")
-            name = d["_id"].get("name") or "?"
+        ]):
             top_moderators.append({
-                "name": name,
+                "name": d["_id"].get("name") or "?",
                 "count": d["count"],
-                "avatar_url": _cache_avatar(bot, mid),
+                "avatar_url": _cache_avatar(bot, d["_id"].get("id")),
             })
 
         return {
@@ -1006,6 +979,389 @@ def put_settings(guild_id):
 
     run_async(_save())
     return jsonify({"ok": True, "data": None})
+
+
+# ═══════════════════════════════════════════════════════════
+# Commands (activables + stats)
+# ═══════════════════════════════════════════════════════════
+
+@api.route("/api/guilds/<guild_id>/commands")
+@require_owner
+def api_commands_list(guild_id):
+    from bot import bot
+    from command_control import build_registry, COMMAND_META
+
+    async def _get():
+        build_registry(bot)
+        cfg = await guilds.find_one(
+            {"_id": int(guild_id)},
+            {"disabled_commands": 1, "commands_notify": 1},
+        )
+        disabled = set(cfg.get("disabled_commands") or []) if cfg else set()
+        notify = bool(cfg.get("commands_notify")) if cfg and "commands_notify" in cfg else True
+
+        since = datetime.now(timezone.utc) - timedelta(days=30)
+        uses_map = {}
+        async for d in mod_logs.aggregate([
+            {"$match": {
+                "guild_id": int(guild_id),
+                "action": "command",
+                "timestamp": {"$gte": since},
+            }},
+            {"$group": {"_id": "$command_id", "count": {"$sum": 1}}},
+        ]):
+            if d["_id"]:
+                uses_map[d["_id"]] = d["count"]
+
+        commands = []
+        for cid, meta in sorted(COMMAND_META.items(), key=lambda x: x[1]["display"]):
+            commands.append({
+                **meta,
+                "enabled": cid not in disabled,
+                "uses": uses_map.get(cid, 0),
+            })
+        return {"commands": commands, "notify": notify}
+
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+
+@api.route("/api/guilds/<guild_id>/commands/bulk", methods=["PUT"])
+@require_owner
+def api_commands_bulk(guild_id):
+    from command_control import COMMAND_META, invalidate_cache
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids") or []
+    enabled = body.get("enabled")
+    if not isinstance(ids, list) or enabled is None:
+        return jsonify({"ok": False, "error": "ids y enabled requeridos"}), 400
+
+    async def _save():
+        safe = [cid for cid in ids if COMMAND_META.get(cid) and not COMMAND_META[cid].get("locked")]
+        if enabled:
+            await guilds.update_one(
+                {"_id": int(guild_id)},
+                {"$pull": {"disabled_commands": {"$in": safe}}},
+                upsert=True,
+            )
+        else:
+            for cid in safe:
+                await guilds.update_one(
+                    {"_id": int(guild_id)},
+                    {"$addToSet": {"disabled_commands": cid}},
+                    upsert=True,
+                )
+        invalidate_cache(int(guild_id))
+        return len(safe)
+
+    n = run_async(_save())
+    return jsonify({"ok": True, "data": {"updated": n}})
+
+
+@api.route("/api/guilds/<guild_id>/commands/settings", methods=["PUT"])
+@require_owner
+def api_commands_settings(guild_id):
+    from command_control import invalidate_cache
+    body = request.get_json(silent=True) or {}
+    if "notify" not in body:
+        return jsonify({"ok": False, "error": "notify required"}), 400
+
+    async def _save():
+        await guilds.update_one(
+            {"_id": int(guild_id)},
+            {"$set": {"commands_notify": bool(body["notify"])}},
+            upsert=True,
+        )
+        invalidate_cache(int(guild_id))
+
+    run_async(_save())
+    return jsonify({"ok": True, "data": None})
+
+
+@api.route("/api/guilds/<guild_id>/commands/stats")
+@require_owner
+def api_commands_stats(guild_id):
+    from bot import bot
+    try:
+        days = max(1, min(90, int(request.args.get("days", 7))))
+    except ValueError:
+        days = 7
+    try:
+        tz_offset = int(request.args.get("tz", "0"))
+    except ValueError:
+        tz_offset = 0
+
+    async def _stats():
+        gid = int(guild_id)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        match = {"guild_id": gid, "action": "command", "timestamp": {"$gte": since}}
+        total = await mod_logs.count_documents(match)
+        errors = await mod_logs.count_documents({**match, "success": False})
+
+        per_day = []
+        try:
+            per_day = [
+                {"date": d["_id"], "count": d["count"]}
+                async for d in mod_logs.aggregate([
+                    {"$match": match},
+                    {"$project": {
+                        "local": {"$dateAdd": {
+                            "startDate": "$timestamp", "unit": "minute", "amount": tz_offset,
+                        }}
+                    }},
+                    {"$group": {
+                        "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$local"}},
+                        "count": {"$sum": 1},
+                    }},
+                    {"$sort": {"_id": 1}},
+                ])
+            ]
+        except Exception:
+            per_day = [
+                {"date": d["_id"], "count": d["count"]}
+                async for d in mod_logs.aggregate([
+                    {"$match": match},
+                    {"$group": {
+                        "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+                        "count": {"$sum": 1},
+                    }},
+                    {"$sort": {"_id": 1}},
+                ])
+            ]
+
+        top_commands = [
+            {"name": d["_id"] or "?", "count": d["count"]}
+            async for d in mod_logs.aggregate([
+                {"$match": match},
+                {"$group": {"_id": "$command_used", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 10},
+            ])
+        ]
+
+        top_users = []
+        async for d in mod_logs.aggregate([
+            {"$match": match},
+            {"$group": {
+                "_id": {"id": "$user_id", "name": "$user_name"},
+                "count": {"$sum": 1},
+            }},
+            {"$sort": {"count": -1}},
+            {"$limit": 10},
+        ]):
+            top_users.append({
+                "name": d["_id"].get("name") or "?",
+                "avatar_url": _cache_avatar(bot, d["_id"].get("id")),
+                "count": d["count"],
+            })
+
+        return {
+            "total": total,
+            "errors": errors,
+            "per_day": per_day,
+            "top_commands": top_commands,
+            "top_users": top_users,
+        }
+
+    return jsonify({"ok": True, "data": run_async(_stats())})
+
+
+# IMPORTANTE: <path:cmd_id> al final para no capturar bulk/settings/stats
+@api.route("/api/guilds/<guild_id>/commands/<path:cmd_id>", methods=["PUT"])
+@require_owner
+def api_command_toggle(guild_id, cmd_id):
+    from command_control import COMMAND_META, invalidate_cache
+    body = request.get_json(silent=True) or {}
+    enabled = body.get("enabled")
+    if enabled is None:
+        return jsonify({"ok": False, "error": "enabled required"}), 400
+
+    meta = COMMAND_META.get(cmd_id)
+    if not meta:
+        return jsonify({"ok": False, "error": "Comando no encontrado"}), 404
+    if meta.get("locked"):
+        return jsonify({"ok": False, "error": "Este comando no se puede desactivar"}), 403
+
+    async def _save():
+        if enabled:
+            await guilds.update_one(
+                {"_id": int(guild_id)},
+                {"$pull": {"disabled_commands": cmd_id}},
+                upsert=True,
+            )
+        else:
+            await guilds.update_one(
+                {"_id": int(guild_id)},
+                {"$addToSet": {"disabled_commands": cmd_id}},
+                upsert=True,
+            )
+        invalidate_cache(int(guild_id))
+
+    run_async(_save())
+    return jsonify({"ok": True, "data": None})
+
+
+# ═══════════════════════════════════════════════════════════
+# Errors viewer
+# ═══════════════════════════════════════════════════════════
+
+@api.route("/api/errors")
+@require_owner
+def api_errors_list():
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    try:
+        limit = min(50, max(1, int(request.args.get("limit", 20))))
+    except ValueError:
+        limit = 20
+    q = (request.args.get("q") or "").strip()
+    level = request.args.get("level")
+
+    async def _get():
+        query = {}
+        if level in ("error", "warning"):
+            query["level"] = level
+        if q:
+            safe = re.escape(q)
+            query["$or"] = [
+                {"message": {"$regex": safe, "$options": "i"}},
+                {"command": {"$regex": safe, "$options": "i"}},
+                {"source": {"$regex": safe, "$options": "i"}},
+            ]
+        total = await bot_errors.count_documents(query)
+        cursor = bot_errors.find(query).sort("last_seen", -1).skip((page - 1) * limit).limit(limit)
+        items = []
+        async for doc in cursor:
+            items.append({
+                "id": str(doc["_id"]),
+                "level": doc.get("level"),
+                "source": doc.get("source"),
+                "command": doc.get("command"),
+                "message": doc.get("message"),
+                "traceback": doc.get("traceback"),
+                "count": doc.get("count", 1),
+                "first_seen": doc["first_seen"].isoformat() if doc.get("first_seen") else None,
+                "last_seen": doc["last_seen"].isoformat() if doc.get("last_seen") else None,
+                "user_name": doc.get("user_name"),
+            })
+        since_24 = datetime.now(timezone.utc) - timedelta(hours=24)
+        last_24h = await bot_errors.count_documents({"last_seen": {"$gte": since_24}})
+        groups = await bot_errors.count_documents({})
+        top_doc = await bot_errors.find_one(sort=[("count", -1)])
+        top = top_doc.get("count", 0) if top_doc else 0
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "pages": max(1, (total + limit - 1) // limit),
+            "summary": {"last_24h": last_24h, "groups": groups, "top": top},
+        }
+
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+
+@api.route("/api/errors/<error_id>", methods=["DELETE"])
+@require_owner
+def api_errors_delete_one(error_id):
+    async def _del():
+        try:
+            res = await bot_errors.delete_one({"_id": ObjectId(error_id)})
+            return res.deleted_count > 0
+        except Exception:
+            return False
+    if not run_async(_del()):
+        return jsonify({"ok": False, "error": "No encontrado"}), 404
+    return jsonify({"ok": True, "data": None})
+
+
+@api.route("/api/errors", methods=["DELETE"])
+@require_owner
+def api_errors_delete_all():
+    body = request.get_json(silent=True) or {}
+    if body.get("all") is not True:
+        return jsonify({"ok": False, "error": "body {all: true} required"}), 400
+
+    async def _del():
+        res = await bot_errors.delete_many({})
+        return res.deleted_count
+
+    n = run_async(_del())
+    return jsonify({"ok": True, "data": {"deleted": n}})
+
+
+# ═══════════════════════════════════════════════════════════
+# Retention
+# ═══════════════════════════════════════════════════════════
+
+@api.route("/api/retention", methods=["GET"])
+@require_owner
+def api_retention_get():
+    async def _get():
+        doc = await panel_meta.find_one({"_id": "retention"})
+        if not doc:
+            return {
+                "retention": DEFAULT_RETENTION,
+                "last_cleanup": None,
+                "last_deleted": {},
+            }
+        return {
+            "retention": doc.get("retention") or DEFAULT_RETENTION,
+            "last_cleanup": doc["last_cleanup"].isoformat() if doc.get("last_cleanup") else None,
+            "last_deleted": doc.get("last_deleted") or {},
+        }
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+
+@api.route("/api/retention", methods=["PUT"])
+@require_owner
+def api_retention_put():
+    body = request.get_json(silent=True) or {}
+    ret = body.get("retention")
+    if not isinstance(ret, dict):
+        return jsonify({"ok": False, "error": "retention object required"}), 400
+
+    allowed = ("moderation", "events", "commands", "errors", "audit")
+    clean = {}
+    for k in allowed:
+        if k not in ret:
+            continue
+        try:
+            days = int((ret[k] or {}).get("days", 0))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"days inválido en {k}"}), 400
+        if days != 0 and (days < 1 or days > 3650):
+            return jsonify({"ok": False, "error": f"days de {k} debe ser 0 o 1–3650"}), 400
+        clean[k] = {"days": days}
+
+    async def _save():
+        doc = await panel_meta.find_one({"_id": "retention"})
+        current = (doc or {}).get("retention") or dict(DEFAULT_RETENTION)
+        current.update(clean)
+        await panel_meta.update_one(
+            {"_id": "retention"},
+            {"$set": {"retention": current}},
+            upsert=True,
+        )
+    run_async(_save())
+    return jsonify({"ok": True, "data": None})
+
+
+@api.route("/api/retention/run", methods=["POST"])
+@require_owner
+def api_retention_run():
+    async def _run():
+        from bot import bot
+        cog = bot.get_cog("Cleanup")
+        if cog and hasattr(cog, "run_cleanup"):
+            deleted = await cog.run_cleanup()
+        else:
+            deleted = {}
+        await write_audit("delete", "POST /api/retention/run", client_ip(), client_ua())
+        return deleted
+
+    deleted = run_async(_run())
+    return jsonify({"ok": True, "data": {"deleted": deleted}})
 
 
 # ═══════════════════════════════════════════════════════════
