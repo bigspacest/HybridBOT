@@ -213,6 +213,18 @@ def _make_preview(content, embed) -> str:
     return "(sin texto)"
 
 
+def _cache_avatar(bot, user_id) -> str | None:
+    if not user_id:
+        return None
+    try:
+        u = bot.get_user(int(user_id))
+        if u:
+            return str(u.display_avatar.url)
+    except Exception:
+        pass
+    return None
+
+
 def _audit_category(method: str, path: str) -> str | None:
     path = path.lower()
     if method == "DELETE":
@@ -606,6 +618,7 @@ def api_overview(guild_id):
     guild = bot.get_guild(int(guild_id))
     if not guild:
         return jsonify({"ok": False, "error": "Guild not found"}), 404
+
     try:
         days = int(request.args.get("days", "7"))
         if days not in (7, 30, 90):
@@ -613,9 +626,21 @@ def api_overview(guild_id):
     except ValueError:
         days = 7
 
+    try:
+        tz_offset = int(request.args.get("tz", "0"))
+        if tz_offset < -720 or tz_offset > 840:
+            tz_offset = 0
+    except ValueError:
+        tz_offset = 0
+
     async def _overview():
         gid = int(guild_id)
-        since = datetime.now(timezone.utc) - timedelta(days=days)
+        now = datetime.now(timezone.utc)
+        period = timedelta(days=days)
+        since = now - period
+        prev_since = since - period
+        prev_until = since
+
         total_bans = await mod_logs.count_documents({"guild_id": gid, "action": "ban"})
         total_warns = await mod_logs.count_documents({"guild_id": gid, "action": "warn"})
         tempbans_pending = await timed_roles.count_documents({"guild_id": gid, "type": "tempban"})
@@ -623,70 +648,234 @@ def api_overview(guild_id):
             "guild_id": gid,
             "$or": [{"type": {"$exists": False}}, {"type": "role"}],
         })
-        commands_7d = await mod_logs.count_documents({
-            "guild_id": gid, "action": "command", "timestamp": {"$gte": since},
-        })
-        pipeline = [
+
+        async def _count(action, start, end):
+            return await mod_logs.count_documents({
+                "guild_id": gid,
+                "action": action,
+                "timestamp": {"$gte": start, "$lt": end},
+            })
+
+        joins_now = await _count("join", since, now)
+        leaves_now = await _count("leave", since, now)
+        joins_prev = await _count("join", prev_since, prev_until)
+        leaves_prev = await _count("leave", prev_since, prev_until)
+        bans_now = await _count("ban", since, now)
+        bans_prev = await _count("ban", prev_since, prev_until)
+        warns_now = await _count("warn", since, now)
+        warns_prev = await _count("warn", prev_since, prev_until)
+        cmds_now = await _count("command", since, now)
+        cmds_prev = await _count("command", prev_since, prev_until)
+
+        trend = {
+            "members": {"now": joins_now - leaves_now, "prev": joins_prev - leaves_prev},
+            "bans": {"now": bans_now, "prev": bans_prev},
+            "warns": {"now": warns_now, "prev": warns_prev},
+            "commands": {"now": cmds_now, "prev": cmds_prev},
+        }
+
+        pipeline_action = [
             {"$match": {
-                "guild_id": gid, "timestamp": {"$gte": since},
+                "guild_id": gid,
+                "timestamp": {"$gte": since, "$lt": now},
                 "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
             }},
-            {"$group": {
-                "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
-                "count": {"$sum": 1},
-            }},
-            {"$sort": {"_id": 1}},
+            {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
         ]
-        actions_per_day = [
-            {"date": d["_id"], "count": d["count"]}
-            async for d in mod_logs.aggregate(pipeline)
+        by_action = [
+            {"action": d["_id"], "count": d["count"]}
+            async for d in mod_logs.aggregate(pipeline_action)
         ]
-        pipeline_growth = [
-            {"$match": {
-                "guild_id": gid, "timestamp": {"$gte": since},
-                "action": {"$in": ["join", "leave"]},
-            }},
-            {"$group": {
-                "_id": {
-                    "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
-                    "action": "$action",
-                },
-                "count": {"$sum": 1},
-            }},
-        ]
+
+        # actions_per_day con tz
+        actions_per_day = []
+        try:
+            pipeline_day = [
+                {"$match": {
+                    "guild_id": gid,
+                    "timestamp": {"$gte": since, "$lt": now},
+                    "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
+                }},
+                {"$project": {
+                    "local": {
+                        "$dateAdd": {
+                            "startDate": "$timestamp",
+                            "unit": "minute",
+                            "amount": tz_offset,
+                        }
+                    }
+                }},
+                {"$group": {
+                    "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$local"}},
+                    "count": {"$sum": 1},
+                }},
+                {"$sort": {"_id": 1}},
+            ]
+            actions_per_day = [
+                {"date": d["_id"], "count": d["count"]}
+                async for d in mod_logs.aggregate(pipeline_day)
+            ]
+        except Exception:
+            pipeline_day_fb = [
+                {"$match": {
+                    "guild_id": gid,
+                    "timestamp": {"$gte": since, "$lt": now},
+                    "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
+                }},
+                {"$group": {
+                    "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+                    "count": {"$sum": 1},
+                }},
+                {"$sort": {"_id": 1}},
+            ]
+            actions_per_day = [
+                {"date": d["_id"], "count": d["count"]}
+                async for d in mod_logs.aggregate(pipeline_day_fb)
+            ]
+
+        # growth
         growth_map = {}
-        async for d in mod_logs.aggregate(pipeline_growth):
-            date = d["_id"]["date"]
-            act = d["_id"]["action"]
-            if date not in growth_map:
-                growth_map[date] = {"date": date, "joins": 0, "leaves": 0}
-            if act == "join":
-                growth_map[date]["joins"] = d["count"]
-            else:
-                growth_map[date]["leaves"] = d["count"]
+        try:
+            pipeline_growth = [
+                {"$match": {
+                    "guild_id": gid,
+                    "timestamp": {"$gte": since, "$lt": now},
+                    "action": {"$in": ["join", "leave"]},
+                }},
+                {"$project": {
+                    "action": 1,
+                    "local": {
+                        "$dateAdd": {
+                            "startDate": "$timestamp",
+                            "unit": "minute",
+                            "amount": tz_offset,
+                        }
+                    },
+                }},
+                {"$group": {
+                    "_id": {
+                        "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$local"}},
+                        "action": "$action",
+                    },
+                    "count": {"$sum": 1},
+                }},
+            ]
+            async for d in mod_logs.aggregate(pipeline_growth):
+                date = d["_id"]["date"]
+                act = d["_id"]["action"]
+                if date not in growth_map:
+                    growth_map[date] = {"date": date, "joins": 0, "leaves": 0}
+                if act == "join":
+                    growth_map[date]["joins"] = d["count"]
+                else:
+                    growth_map[date]["leaves"] = d["count"]
+        except Exception:
+            pipeline_growth_fb = [
+                {"$match": {
+                    "guild_id": gid,
+                    "timestamp": {"$gte": since, "$lt": now},
+                    "action": {"$in": ["join", "leave"]},
+                }},
+                {"$group": {
+                    "_id": {
+                        "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+                        "action": "$action",
+                    },
+                    "count": {"$sum": 1},
+                }},
+            ]
+            async for d in mod_logs.aggregate(pipeline_growth_fb):
+                date = d["_id"]["date"]
+                act = d["_id"]["action"]
+                if date not in growth_map:
+                    growth_map[date] = {"date": date, "joins": 0, "leaves": 0}
+                if act == "join":
+                    growth_map[date]["joins"] = d["count"]
+                else:
+                    growth_map[date]["leaves"] = d["count"]
         growth = sorted(growth_map.values(), key=lambda x: x["date"])
+
+        # heatmap 7x24 (lun=0 … dom=6)
+        heatmap = [[0 for _ in range(24)] for _ in range(7)]
+        try:
+            pipeline_heat = [
+                {"$match": {
+                    "guild_id": gid,
+                    "timestamp": {"$gte": since, "$lt": now},
+                }},
+                {"$project": {
+                    "local": {
+                        "$dateAdd": {
+                            "startDate": "$timestamp",
+                            "unit": "minute",
+                            "amount": tz_offset,
+                        }
+                    }
+                }},
+                {"$group": {
+                    "_id": {
+                        "dow": {"$subtract": [{"$dayOfWeek": "$local"}, 2]},
+                        "hour": {"$hour": "$local"},
+                    },
+                    "count": {"$sum": 1},
+                }},
+            ]
+            async for d in mod_logs.aggregate(pipeline_heat):
+                dow = d["_id"]["dow"]
+                if dow < 0:
+                    dow = 6
+                hour = d["_id"]["hour"]
+                if 0 <= dow <= 6 and 0 <= hour <= 23:
+                    heatmap[dow][hour] = d["count"]
+        except Exception:
+            cursor = mod_logs.find({
+                "guild_id": gid,
+                "timestamp": {"$gte": since, "$lt": now},
+            }, {"timestamp": 1})
+            async for doc in cursor:
+                ts = doc["timestamp"]
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                local = ts + timedelta(minutes=tz_offset)
+                heatmap[local.weekday()][local.hour] += 1
+
+        # top_moderators + avatar
         pipeline2 = [
             {"$match": {
                 "guild_id": gid,
+                "timestamp": {"$gte": since, "$lt": now},
                 "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
             }},
-            {"$group": {"_id": "$moderator_name", "count": {"$sum": 1}}},
+            {"$group": {
+                "_id": {"id": "$moderator_id", "name": "$moderator_name"},
+                "count": {"$sum": 1},
+            }},
             {"$sort": {"count": -1}},
             {"$limit": 5},
         ]
-        top_moderators = [
-            {"name": d["_id"], "count": d["count"]}
-            async for d in mod_logs.aggregate(pipeline2)
-        ]
+        top_moderators = []
+        async for d in mod_logs.aggregate(pipeline2):
+            mid = d["_id"].get("id")
+            name = d["_id"].get("name") or "?"
+            top_moderators.append({
+                "name": name,
+                "count": d["count"],
+                "avatar_url": _cache_avatar(bot, mid),
+            })
+
         return {
             "member_count": guild.member_count,
             "total_bans": total_bans,
             "total_warns": total_warns,
             "tempbans_pending": tempbans_pending,
             "timed_roles_pending": timed_roles_pending,
-            "commands_7d": commands_7d,
+            "commands_7d": cmds_now,
+            "trend": trend,
+            "by_action": by_action,
             "actions_per_day": actions_per_day,
             "growth": growth,
+            "heatmap": heatmap,
             "top_moderators": top_moderators,
         }
 
@@ -826,6 +1015,7 @@ def put_settings(guild_id):
 @api.route("/api/guilds/<guild_id>/modlogs")
 @require_owner
 def api_modlogs(guild_id):
+    from bot import bot
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -859,8 +1049,10 @@ def api_modlogs(guild_id):
                 "action": doc["action"],
                 "moderator_id": str(doc["moderator_id"]),
                 "moderator_name": doc.get("moderator_name"),
+                "moderator_avatar": _cache_avatar(bot, doc.get("moderator_id")),
                 "target_id": str(doc["target_id"]) if doc.get("target_id") else None,
                 "target_name": doc.get("target_name"),
+                "target_avatar": _cache_avatar(bot, doc.get("target_id")),
                 "reason": doc.get("reason"),
                 "duration": doc.get("duration"),
                 "command_used": doc.get("command_used"),
@@ -1015,7 +1207,7 @@ def delete_note(guild_id, user_id, note_id):
 
 
 # ═══════════════════════════════════════════════════════════
-# Timed roles / tempbans (scheduled)
+# Timed roles / tempbans
 # ═══════════════════════════════════════════════════════════
 
 @api.route("/api/guilds/<guild_id>/scheduled")
