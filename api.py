@@ -10,14 +10,17 @@ from urllib.parse import urlencode
 import discord
 import requests
 from bson import ObjectId
-from flask import Blueprint, request, jsonify, redirect, make_response, send_file
+from flask import Blueprint, request, jsonify, redirect, make_response, send_file, g
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from config import (
     DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, REDIRECT_URI,
-    SESSION_SECRET, DASHBOARD_URL, OWNER_ID
+    SESSION_SECRET, DASHBOARD_URL, OWNER_ID,
 )
-from database import guilds, timed_roles, mod_logs, log_action, db
+from database import (
+    guilds, timed_roles, mod_logs, log_action, db,
+    panel_audit, panel_meta, scheduled_messages, write_audit,
+)
 
 api = Blueprint("api", __name__)
 
@@ -32,6 +35,8 @@ DB_COLLECTIONS = {
 }
 
 _rate = {}
+
+# ──────────────────── helpers ────────────────────
 
 def rate_limit(max_calls=40, period=60):
     def decorator(f):
@@ -53,8 +58,23 @@ def run_async(coro):
     future = asyncio.run_coroutine_threadsafe(coro, bot.loop)
     return future.result(timeout=20)
 
-def create_session(user_id: str) -> str:
-    return serializer.dumps({"uid": str(user_id)})
+def client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    return (request.remote_addr or "")[:64]
+
+def client_ua() -> str:
+    return (request.headers.get("User-Agent") or "")[:200]
+
+async def _get_session_version() -> int:
+    meta = await panel_meta.find_one({"_id": "settings"})
+    if not meta:
+        return 1
+    return int(meta.get("session_version", 1))
+
+def create_session(user_id: str, version: int) -> str:
+    return serializer.dumps({"uid": str(user_id), "v": int(version)})
 
 def get_session_user() -> str | None:
     token = request.cookies.get(COOKIE_NAME)
@@ -62,8 +82,13 @@ def get_session_user() -> str | None:
         return None
     try:
         data = serializer.loads(token, max_age=COOKIE_MAX_AGE)
-        return str(data["uid"])
-    except (BadSignature, SignatureExpired, KeyError, TypeError):
+        uid = str(data["uid"])
+        cookie_v = int(data.get("v", 0))
+        current_v = run_async(_get_session_version())
+        if cookie_v != current_v:
+            return None
+        return uid
+    except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
         return None
 
 def require_owner(f):
@@ -72,6 +97,7 @@ def require_owner(f):
         uid = get_session_user()
         if not uid or uid != str(OWNER_ID):
             return jsonify({"ok": False, "error": "Unauthorized"}), 401
+        g.panel_user = uid
         return f(*args, **kwargs)
     return wrapped
 
@@ -89,7 +115,6 @@ def _parse_duration(duration: str) -> int | None:
     return value * multipliers[unit]
 
 def _serialize_doc(doc: dict) -> dict:
-    """Convierte ObjectId, datetime e IDs grandes a str para JSON."""
     out = {}
     for k, v in doc.items():
         if isinstance(v, ObjectId):
@@ -112,7 +137,7 @@ def _serialize_doc(doc: dict) -> dict:
             out[k] = v
     return out
 
-def _modlogs_filter(guild_id: int, action=None, search=None, date_from=None, date_to=None) -> dict:
+def _modlogs_filter(guild_id: int, action=None, search=None, date_from=None, date_to=None, user_id=None) -> dict:
     query = {"guild_id": int(guild_id)}
     if action:
         query["action"] = action
@@ -123,6 +148,15 @@ def _modlogs_filter(guild_id: int, action=None, search=None, date_from=None, dat
             {"reason": {"$regex": safe, "$options": "i"}},
             {"moderator_name": {"$regex": safe, "$options": "i"}},
         ]
+    if user_id is not None:
+        try:
+            uid = int(user_id)
+            query["$or"] = [
+                {"target_id": uid},
+                {"moderator_id": uid},
+            ]
+        except (ValueError, TypeError):
+            pass
     ts = {}
     if date_from:
         try:
@@ -140,13 +174,66 @@ def _modlogs_filter(guild_id: int, action=None, search=None, date_from=None, dat
         query["timestamp"] = ts
     return query
 
-# ──────────────────────── Dashboard ────────────────────────
+async def _get_alerts() -> dict:
+    meta = await panel_meta.find_one({"_id": "settings"})
+    if not meta:
+        return {"login": True, "denied": True, "destructive": True}
+    return meta.get("alerts") or {"login": True, "denied": True, "destructive": True}
+
+async def _dm_owner(text: str):
+    try:
+        from bot import bot
+        user = await bot.fetch_user(int(OWNER_ID))
+        await user.send(text[:1900])
+    except Exception:
+        pass
+
+def _audit_category(method: str, path: str) -> str | None:
+    path = path.lower()
+    if method == "DELETE":
+        return "delete"
+    if method in ("POST", "PUT"):
+        if "/actions/" in path:
+            return "action"
+        if path.endswith("/settings") or "/settings" in path:
+            return "settings"
+        if "/embeds" in path or "/rolepanels" in path or "/scheduled-messages" in path:
+            return "embed"
+    return None
+
+@api.after_request
+def audit_after_request(response):
+    try:
+        if not request.path.startswith("/api"):
+            return response
+        if request.method not in ("POST", "PUT", "DELETE"):
+            return response
+        # no auditar si no hay sesión válida (excepto login_denied se hace en callback)
+        cat = _audit_category(request.method, request.path)
+        if not cat:
+            return response
+        # resumir ruta sin query
+        detail = f"{request.method} {request.path}"[:300]
+        run_async(write_audit(cat, detail, client_ip(), client_ua()))
+
+        # alerta destructiva
+        if cat == "delete" and response.status_code < 400:
+            alerts = run_async(_get_alerts())
+            if alerts.get("destructive"):
+                run_async(_dm_owner(
+                    f"⚠️ **Panel destructive action**\n`{detail}`\nIP: `{client_ip()}`"
+                ))
+    except Exception:
+        pass
+    return response
+
+# ──────────────────── Dashboard ────────────────────
 @api.route("/dashboard")
 def dashboard():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
     return send_file(path)
 
-# ──────────────────────── Auth ────────────────────────
+# ──────────────────── Auth ────────────────────
 @api.route("/auth/login")
 @rate_limit()
 def auth_login():
@@ -170,6 +257,8 @@ def auth_callback():
     code = request.args.get("code")
     state = request.args.get("state")
     stored = request.cookies.get("oauth_state")
+    ip = client_ip()
+    ua = client_ua()
 
     if not code or not state or state != stored:
         return jsonify({"ok": False, "error": "Invalid state or code"}), 400
@@ -199,11 +288,25 @@ def auth_callback():
 
     user = user_res.json()
     user_id = str(user["id"])
+    username = f"{user.get('username', '?')}#{user.get('discriminator', '0')}"
+    if user.get("discriminator") in (None, "0"):
+        username = user.get("global_name") or user.get("username", "?")
 
     if user_id != str(OWNER_ID):
+        run_async(write_audit(
+            "login_denied",
+            f"{username} ({user_id})",
+            ip, ua,
+        ))
+        alerts = run_async(_get_alerts())
+        if alerts.get("denied"):
+            run_async(_dm_owner(
+                f"🚫 **Login denied**\nUser: **{username}** (`{user_id}`)\nIP: `{ip}`\nUA: `{ua[:80]}`"
+            ))
         return jsonify({"ok": False, "error": "Access denied. Owner only."}), 403
 
-    session_token = create_session(user_id)
+    version = run_async(_get_session_version())
+    session_token = create_session(user_id, version)
     base = (DASHBOARD_URL or "").rstrip("/")
     resp = make_response(redirect(f"{base}/dashboard"))
     resp.set_cookie(
@@ -212,10 +315,20 @@ def auth_callback():
         max_age=COOKIE_MAX_AGE,
     )
     resp.delete_cookie("oauth_state", samesite="Lax", secure=True)
+
+    run_async(write_audit("login", f"Owner login from {ip}", ip, ua))
+    alerts = run_async(_get_alerts())
+    if alerts.get("login"):
+        run_async(_dm_owner(
+            f"✅ **Panel login**\nIP: `{ip}`\nDevice: `{ua[:100]}`"
+        ))
     return resp
 
 @api.route("/auth/logout", methods=["POST"])
 def auth_logout():
+    ip = client_ip()
+    ua = client_ua()
+    run_async(write_audit("logout", "Owner logout", ip, ua))
     resp = make_response(jsonify({"ok": True, "data": None}))
     resp.delete_cookie(COOKIE_NAME, samesite="Lax", secure=True)
     return resp
@@ -225,7 +338,106 @@ def auth_logout():
 def api_me():
     return jsonify({"ok": True, "data": {"id": get_session_user(), "is_owner": True}})
 
-# ──────────────────────── Status ──────────────────────
+# ──────────────────── Panel settings / audit ────────────────────
+@api.route("/api/panel/settings", methods=["GET"])
+@require_owner
+def panel_settings_get():
+    async def _get():
+        meta = await panel_meta.find_one({"_id": "settings"})
+        if not meta:
+            return {"alerts": {"login": True, "denied": True, "destructive": True}}
+        return {
+            "alerts": meta.get("alerts") or {"login": True, "denied": True, "destructive": True},
+        }
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+@api.route("/api/panel/settings", methods=["PUT"])
+@require_owner
+def panel_settings_put():
+    body = request.get_json(silent=True) or {}
+    alerts = body.get("alerts")
+    if not isinstance(alerts, dict):
+        return jsonify({"ok": False, "error": "alerts object required"}), 400
+
+    async def _save():
+        await panel_meta.update_one(
+            {"_id": "settings"},
+            {"$set": {
+                "alerts": {
+                    "login": bool(alerts.get("login", True)),
+                    "denied": bool(alerts.get("denied", True)),
+                    "destructive": bool(alerts.get("destructive", True)),
+                }
+            }},
+            upsert=True,
+        )
+    run_async(_save())
+    return jsonify({"ok": True, "data": None})
+
+@api.route("/api/panel/revoke-sessions", methods=["POST"])
+@require_owner
+def panel_revoke_sessions():
+    async def _revoke():
+        meta = await panel_meta.find_one({"_id": "settings"})
+        current = int((meta or {}).get("session_version", 1))
+        new_v = current + 1
+        await panel_meta.update_one(
+            {"_id": "settings"},
+            {"$set": {"session_version": new_v}},
+            upsert=True,
+        )
+        return new_v
+
+    new_v = run_async(_revoke())
+    # nueva cookie con la versión nueva para el owner actual
+    token = create_session(str(OWNER_ID), new_v)
+    resp = make_response(jsonify({"ok": True, "data": {"session_version": new_v}}))
+    resp.set_cookie(
+        COOKIE_NAME, token,
+        httponly=True, secure=True, samesite="Lax",
+        max_age=COOKIE_MAX_AGE,
+    )
+    return resp
+
+@api.route("/api/audit")
+@require_owner
+def api_audit():
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    try:
+        limit = min(50, max(1, int(request.args.get("limit", 20))))
+    except ValueError:
+        limit = 20
+    event = request.args.get("event")
+
+    async def _query():
+        query = {}
+        if event:
+            query["event"] = event
+        total = await panel_audit.count_documents(query)
+        cursor = panel_audit.find(query).sort("timestamp", -1).skip((page - 1) * limit).limit(limit)
+        items = []
+        async for doc in cursor:
+            items.append({
+                "id": str(doc["_id"]),
+                "event": doc.get("event"),
+                "detail": doc.get("detail"),
+                "ip": doc.get("ip"),
+                "user_agent": doc.get("user_agent"),
+                "timestamp": doc["timestamp"].isoformat() if doc.get("timestamp") else None,
+            })
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "pages": max(1, (total + limit - 1) // limit),
+        }
+
+    return jsonify({"ok": True, "data": run_async(_query())})
+
+# ──────────────────── Status ────────────────────
 @api.route("/api/status")
 @require_owner
 def api_status():
@@ -238,7 +450,7 @@ def api_status():
         "users": sum(g.member_count or 0 for g in bot.guilds),
     }})
 
-# ──────────────────────── Guilds ──────────────────────
+# ──────────────────── Guilds ────────────────────
 @api.route("/api/guilds")
 @require_owner
 @rate_limit()
@@ -288,12 +500,9 @@ def members_search(guild_id):
     guild = bot.get_guild(int(guild_id))
     if not guild:
         return jsonify({"ok": False, "error": "Guild not found"}), 404
-
     results = []
     for m in guild.members:
-        if (q in m.name.lower()
-                or (m.nick and q in m.nick.lower())
-                or q in str(m.id)):
+        if q in m.name.lower() or (m.nick and q in m.nick.lower()) or q in str(m.id):
             results.append({
                 "id": str(m.id),
                 "name": str(m),
@@ -303,7 +512,52 @@ def members_search(guild_id):
                 break
     return jsonify({"ok": True, "data": results})
 
-# ──────────────────────── Overview ────────────────────
+# ──────────────────── Profile ────────────────────
+@api.route("/api/guilds/<guild_id>/members/<user_id>/profile")
+@require_owner
+def member_profile(guild_id, user_id):
+    from bot import bot
+    guild = bot.get_guild(int(guild_id))
+    if not guild:
+        return jsonify({"ok": False, "error": "Guild not found"}), 404
+
+    async def _profile():
+        member = guild.get_member(int(user_id))
+        if member:
+            return {
+                "id": str(member.id),
+                "name": str(member),
+                "avatar_url": str(member.display_avatar.url),
+                "created_at": member.created_at.isoformat(),
+                "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+                "roles": [
+                    {"id": str(r.id), "name": r.name, "color": str(r.color)}
+                    for r in member.roles if not r.is_default()
+                ],
+                "is_bot": member.bot,
+                "in_guild": True,
+            }
+        try:
+            user = await bot.fetch_user(int(user_id))
+        except Exception:
+            return None
+        return {
+            "id": str(user.id),
+            "name": str(user),
+            "avatar_url": str(user.display_avatar.url),
+            "created_at": user.created_at.isoformat(),
+            "joined_at": None,
+            "roles": [],
+            "is_bot": user.bot,
+            "in_guild": False,
+        }
+
+    data = run_async(_profile())
+    if data is None:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+    return jsonify({"ok": True, "data": data})
+
+# ──────────────────── Overview ────────────────────
 @api.route("/api/guilds/<guild_id>/overview")
 @require_owner
 def api_overview(guild_id):
@@ -311,7 +565,6 @@ def api_overview(guild_id):
     guild = bot.get_guild(int(guild_id))
     if not guild:
         return jsonify({"ok": False, "error": "Guild not found"}), 404
-
     try:
         days = int(request.args.get("days", "7"))
         if days not in (7, 30, 90):
@@ -322,7 +575,6 @@ def api_overview(guild_id):
     async def _overview():
         gid = int(guild_id)
         since = datetime.now(timezone.utc) - timedelta(days=days)
-
         total_bans = await mod_logs.count_documents({"guild_id": gid, "action": "ban"})
         total_warns = await mod_logs.count_documents({"guild_id": gid, "action": "warn"})
         tempbans_pending = await timed_roles.count_documents({"guild_id": gid, "type": "tempban"})
@@ -330,17 +582,12 @@ def api_overview(guild_id):
             "guild_id": gid,
             "$or": [{"type": {"$exists": False}}, {"type": "role"}],
         })
-
         commands_7d = await mod_logs.count_documents({
-            "guild_id": gid,
-            "action": "command",
-            "timestamp": {"$gte": since},
+            "guild_id": gid, "action": "command", "timestamp": {"$gte": since},
         })
-
         pipeline = [
             {"$match": {
-                "guild_id": gid,
-                "timestamp": {"$gte": since},
+                "guild_id": gid, "timestamp": {"$gte": since},
                 "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
             }},
             {"$group": {
@@ -349,17 +596,9 @@ def api_overview(guild_id):
             }},
             {"$sort": {"_id": 1}},
         ]
-        actions_per_day = [
-            {"date": d["_id"], "count": d["count"]}
-            async for d in mod_logs.aggregate(pipeline)
-        ]
-
+        actions_per_day = [{"date": d["_id"], "count": d["count"]} async for d in mod_logs.aggregate(pipeline)]
         pipeline_growth = [
-            {"$match": {
-                "guild_id": gid,
-                "timestamp": {"$gte": since},
-                "action": {"$in": ["join", "leave"]},
-            }},
+            {"$match": {"guild_id": gid, "timestamp": {"$gte": since}, "action": {"$in": ["join", "leave"]}}},
             {"$group": {
                 "_id": {
                     "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
@@ -379,21 +618,13 @@ def api_overview(guild_id):
             else:
                 growth_map[date]["leaves"] = d["count"]
         growth = sorted(growth_map.values(), key=lambda x: x["date"])
-
         pipeline2 = [
-            {"$match": {
-                "guild_id": gid,
-                "action": {"$nin": ["command", "join", "leave", "msgdelete"]},
-            }},
+            {"$match": {"guild_id": gid, "action": {"$nin": ["command", "join", "leave", "msgdelete"]}}},
             {"$group": {"_id": "$moderator_name", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
             {"$limit": 5},
         ]
-        top_moderators = [
-            {"name": d["_id"], "count": d["count"]}
-            async for d in mod_logs.aggregate(pipeline2)
-        ]
-
+        top_moderators = [{"name": d["_id"], "count": d["count"]} async for d in mod_logs.aggregate(pipeline2)]
         return {
             "member_count": guild.member_count,
             "total_bans": total_bans,
@@ -408,7 +639,7 @@ def api_overview(guild_id):
 
     return jsonify({"ok": True, "data": run_async(_overview())})
 
-# ──────────────────────── Settings ────────────────────
+# ──────────────────── Settings ────────────────────
 DEFAULT_AUTOMOD = {"anti_spam": False, "anti_links": False, "bad_words": []}
 DEFAULT_WARN_PUNISHMENT = {"threshold": None, "action": None}
 
@@ -419,9 +650,7 @@ def get_settings(guild_id):
         cfg = await guilds.find_one({"_id": int(guild_id)})
         if not cfg:
             return {
-                "admin_roles": [],
-                "manager_roles": [],
-                "staff_roles": [],
+                "admin_roles": [], "manager_roles": [], "staff_roles": [],
                 "welcome": {"channel_id": None, "message": None},
                 "autoroles": {"join": [], "timed": []},
                 "automod": DEFAULT_AUTOMOD.copy(),
@@ -458,7 +687,6 @@ def put_settings(guild_id):
 
     async def _save():
         update = {}
-
         for key in ("admin_roles", "manager_roles", "staff_roles"):
             if key in body and isinstance(body[key], list):
                 valid = []
@@ -470,7 +698,6 @@ def put_settings(guild_id):
                     except (ValueError, TypeError):
                         continue
                 update[key] = valid
-
         if "welcome" in body and isinstance(body["welcome"], dict):
             w = body["welcome"]
             channel_id = None
@@ -481,11 +708,7 @@ def put_settings(guild_id):
                         channel_id = cid
                 except (ValueError, TypeError):
                     pass
-            update["welcome"] = {
-                "channel_id": channel_id,
-                "message": w.get("message"),
-            }
-
+            update["welcome"] = {"channel_id": channel_id, "message": w.get("message")}
         if "autoroles" in body and isinstance(body["autoroles"], dict):
             ar = body["autoroles"]
             join = []
@@ -506,7 +729,6 @@ def put_settings(guild_id):
                 except (ValueError, TypeError, KeyError):
                     continue
             update["autoroles"] = {"join": join, "timed": timed}
-
         if "automod" in body and isinstance(body["automod"], dict):
             am = body["automod"]
             bad_words = am.get("bad_words") or []
@@ -517,7 +739,6 @@ def put_settings(guild_id):
                 "anti_links": bool(am.get("anti_links")),
                 "bad_words": [str(w)[:50] for w in bad_words[:50]],
             }
-
         if "warn_punishment" in body and isinstance(body["warn_punishment"], dict):
             wp = body["warn_punishment"]
             threshold = wp.get("threshold")
@@ -532,14 +753,13 @@ def put_settings(guild_id):
             if action not in ("timeout", "kick", "ban", None):
                 action = None
             update["warn_punishment"] = {"threshold": threshold, "action": action}
-
         if update:
             await guilds.update_one({"_id": int(guild_id)}, {"$set": update}, upsert=True)
 
     run_async(_save())
     return jsonify({"ok": True, "data": None})
 
-# ──────────────────────── Mod Logs ────────────────────
+# ──────────────────── Mod Logs ────────────────────
 @api.route("/api/guilds/<guild_id>/modlogs")
 @require_owner
 def api_modlogs(guild_id):
@@ -552,14 +772,16 @@ def api_modlogs(guild_id):
     except ValueError:
         limit = 20
 
-    action = request.args.get("action")
-    moderator_id = request.args.get("moderator_id")
-    search = request.args.get("search")
-    date_from = request.args.get("from")
-    date_to = request.args.get("to")
-
     async def _query():
-        query = _modlogs_filter(int(guild_id), action, search, date_from, date_to)
+        query = _modlogs_filter(
+            int(guild_id),
+            action=request.args.get("action"),
+            search=request.args.get("search"),
+            date_from=request.args.get("from"),
+            date_to=request.args.get("to"),
+            user_id=request.args.get("user_id"),
+        )
+        moderator_id = request.args.get("moderator_id")
         if moderator_id:
             try:
                 query["moderator_id"] = int(moderator_id)
@@ -602,8 +824,6 @@ def delete_modlogs(guild_id):
 
     async def _delete():
         deleted = 0
-
-        # Body A: ids específicos
         if "ids" in body:
             ids = body["ids"]
             if not isinstance(ids, list) or len(ids) == 0:
@@ -616,13 +836,8 @@ def delete_modlogs(guild_id):
                     object_ids.append(ObjectId(str(i)))
                 except Exception:
                     return {"error": f"invalid id: {i}", "code": 400}
-            res = await mod_logs.delete_many({
-                "_id": {"$in": object_ids},
-                "guild_id": gid,
-            })
+            res = await mod_logs.delete_many({"_id": {"$in": object_ids}, "guild_id": gid})
             deleted = res.deleted_count
-
-        # Body B: borrar por filtros
         elif body.get("all") is True:
             if body.get("confirm") != "ELIMINAR":
                 return {"error": 'confirm must be "ELIMINAR"', "code": 400}
@@ -639,12 +854,13 @@ def delete_modlogs(guild_id):
         else:
             return {"error": "provide ids or {all: true, confirm: ELIMINAR}", "code": 400}
 
-        # Auditoría
         await log_action(
             gid, "logs_cleared", int(OWNER_ID), "Dashboard",
-            reason=f"Deleted {deleted} mod log(s)",
-            source="dashboard",
+            reason=f"Deleted {deleted} mod log(s)", source="dashboard",
         )
+        alerts = await _get_alerts()
+        if alerts.get("destructive") and deleted > 0:
+            await _dm_owner(f"🗑️ **Mod logs cleared**\nGuild `{gid}`\nDeleted: **{deleted}**")
         return {"deleted": deleted}
 
     result = run_async(_delete())
@@ -652,7 +868,7 @@ def delete_modlogs(guild_id):
         return jsonify({"ok": False, "error": result["error"]}), result.get("code", 400)
     return jsonify({"ok": True, "data": result})
 
-# ──────────────────────── Member moderation ───────────
+# ──────────────────── Member mod ────────────────────
 @api.route("/api/guilds/<guild_id>/members/<user_id>/moderation")
 @require_owner
 def member_moderation(guild_id, user_id):
@@ -677,14 +893,9 @@ def delete_warn(guild_id, user_id, warn_id):
             return False
         for i, w in enumerate(data["warns"], 1):
             w["id"] = i
-        await guilds.update_one(
-            {"_id": int(guild_id)},
-            {"$set": {f"moderation.{user_id}": data}},
-        )
+        await guilds.update_one({"_id": int(guild_id)}, {"$set": {f"moderation.{user_id}": data}})
         return True
-
-    ok = run_async(_del())
-    if not ok:
+    if not run_async(_del()):
         return jsonify({"ok": False, "error": "Warn not found"}), 404
     return jsonify({"ok": True, "data": None})
 
@@ -701,20 +912,12 @@ def add_note(guild_id, user_id):
         data = cfg.get("moderation", {}).get(str(user_id), {"warns": [], "notes": []}) if cfg else {"warns": [], "notes": []}
         note_id = len(data["notes"]) + 1
         data["notes"].append({
-            "id": note_id,
-            "content": content,
-            "moderator": int(OWNER_ID),
+            "id": note_id, "content": content, "moderator": int(OWNER_ID),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-        await guilds.update_one(
-            {"_id": int(guild_id)},
-            {"$set": {f"moderation.{user_id}": data}},
-            upsert=True,
-        )
+        await guilds.update_one({"_id": int(guild_id)}, {"$set": {f"moderation.{user_id}": data}}, upsert=True)
         return note_id
-
-    note_id = run_async(_add())
-    return jsonify({"ok": True, "data": {"id": note_id}})
+    return jsonify({"ok": True, "data": {"id": run_async(_add())}})
 
 @api.route("/api/guilds/<guild_id>/members/<user_id>/notes/<note_id>", methods=["DELETE"])
 @require_owner
@@ -730,18 +933,13 @@ def delete_note(guild_id, user_id, note_id):
             return False
         for i, n in enumerate(data["notes"], 1):
             n["id"] = i
-        await guilds.update_one(
-            {"_id": int(guild_id)},
-            {"$set": {f"moderation.{user_id}": data}},
-        )
+        await guilds.update_one({"_id": int(guild_id)}, {"$set": {f"moderation.{user_id}": data}})
         return True
-
-    ok = run_async(_del())
-    if not ok:
+    if not run_async(_del()):
         return jsonify({"ok": False, "error": "Note not found"}), 404
     return jsonify({"ok": True, "data": None})
 
-# ──────────────────────── Scheduled ───────────────────
+# ──────────────────── Scheduled roles / tempbans ────────────────────
 @api.route("/api/guilds/<guild_id>/scheduled")
 @require_owner
 def api_scheduled(guild_id):
@@ -755,14 +953,12 @@ def api_scheduled(guild_id):
             user_name = None
             if uid:
                 user = bot.get_user(uid)
-                if user:
-                    user_name = str(user)
-                else:
+                if not user:
                     try:
                         user = await bot.fetch_user(uid)
-                        user_name = str(user)
                     except Exception:
-                        user_name = str(uid)
+                        user = None
+                user_name = str(user) if user else str(uid)
             items.append({
                 "id": str(doc["_id"]),
                 "type": doc.get("type", "role"),
@@ -783,44 +979,113 @@ def delete_scheduled(guild_id, doc_id):
             return res.deleted_count > 0
         except Exception:
             return False
-
-    ok = run_async(_del())
-    if not ok:
+    if not run_async(_del()):
         return jsonify({"ok": False, "error": "Not found"}), 404
     return jsonify({"ok": True, "data": None})
 
-# ──────────────────────── DB Explorer ─────────────────
+# ──────────────────── Scheduled messages ────────────────────
+@api.route("/api/guilds/<guild_id>/scheduled-messages", methods=["GET"])
+@require_owner
+def list_scheduled_messages(guild_id):
+    async def _get():
+        cursor = scheduled_messages.find({"guild_id": int(guild_id)}).sort("send_at", 1)
+        items = []
+        async for doc in cursor:
+            items.append({
+                "id": str(doc["_id"]),
+                "channel_id": str(doc["channel_id"]),
+                "content": doc.get("content"),
+                "embed": doc.get("embed"),
+                "buttons": doc.get("buttons") or [],
+                "send_at": doc["send_at"].isoformat(),
+                "repeat": doc.get("repeat", "none"),
+                "preview": doc.get("preview"),
+            })
+        return items
+    return jsonify({"ok": True, "data": run_async(_get())})
+
+@api.route("/api/guilds/<guild_id>/scheduled-messages", methods=["POST"])
+@require_owner
+def create_scheduled_message(guild_id):
+    from bot import bot
+    body = request.get_json(silent=True) or {}
+    channel_id = body.get("channel_id")
+    send_at = body.get("send_at")
+    repeat = body.get("repeat") or "none"
+    if not channel_id or not send_at:
+        return jsonify({"ok": False, "error": "channel_id and send_at required"}), 400
+    if repeat not in ("none", "daily", "weekly", "monthly"):
+        return jsonify({"ok": False, "error": "invalid repeat"}), 400
+
+    guild = bot.get_guild(int(guild_id))
+    if not guild:
+        return jsonify({"ok": False, "error": "Guild not found"}), 404
+    channel = guild.get_channel(int(channel_id))
+    if not channel or not isinstance(channel, discord.TextChannel):
+        return jsonify({"ok": False, "error": "Channel not found"}), 404
+
+    try:
+        when = datetime.fromisoformat(send_at.replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid send_at ISO datetime"}), 400
+
+    content = body.get("content")
+    embed = body.get("embed")
+    buttons = body.get("buttons") or []
+    preview = (content or (embed or {}).get("title") or "")[:80]
+
+    async def _create():
+        res = await scheduled_messages.insert_one({
+            "guild_id": int(guild_id),
+            "channel_id": int(channel_id),
+            "content": content,
+            "embed": embed,
+            "buttons": buttons[:5] if isinstance(buttons, list) else [],
+            "send_at": when,
+            "repeat": repeat,
+            "preview": preview,
+        })
+        return str(res.inserted_id)
+
+    return jsonify({"ok": True, "data": {"id": run_async(_create())}})
+
+@api.route("/api/guilds/<guild_id>/scheduled-messages/<msg_id>", methods=["DELETE"])
+@require_owner
+def delete_scheduled_message(guild_id, msg_id):
+    async def _del():
+        try:
+            res = await scheduled_messages.delete_one({
+                "_id": ObjectId(msg_id),
+                "guild_id": int(guild_id),
+            })
+            return res.deleted_count > 0
+        except Exception:
+            return False
+    if not run_async(_del()):
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return jsonify({"ok": True, "data": None})
+
+# ──────────────────── DB Explorer ────────────────────
 @api.route("/api/guilds/<guild_id>/db")
 @require_owner
 def api_db_overview(guild_id):
     gid = int(guild_id)
 
     async def _get():
-        collections = []
-
-        # guilds: 0 o 1 doc con _id == guild_id
-        g_count = await guilds.count_documents({"_id": gid})
-        collections.append({"name": "guilds", "count": g_count})
-
-        tr_count = await timed_roles.count_documents({"guild_id": gid})
-        collections.append({"name": "timed_roles", "count": tr_count})
-
-        ml_count = await mod_logs.count_documents({"guild_id": gid})
-        collections.append({"name": "mod_logs", "count": ml_count})
-
+        collections = [
+            {"name": "guilds", "count": await guilds.count_documents({"_id": gid})},
+            {"name": "timed_roles", "count": await timed_roles.count_documents({"guild_id": gid})},
+            {"name": "mod_logs", "count": await mod_logs.count_documents({"guild_id": gid})},
+        ]
         result = {"collections": collections}
-
         try:
             stats = await db.command("dbstats")
-            result["storage"] = {
-                "used_bytes": int(stats.get("dataSize", 0)),
-                "limit_bytes": None,
-            }
+            result["storage"] = {"used_bytes": int(stats.get("dataSize", 0)), "limit_bytes": None}
         except Exception:
             pass
-
         return result
-
     return jsonify({"ok": True, "data": run_async(_get())})
 
 @api.route("/api/guilds/<guild_id>/db/<collection>")
@@ -828,7 +1093,6 @@ def api_db_overview(guild_id):
 def api_db_collection(guild_id, collection):
     if collection not in DB_COLLECTIONS:
         return jsonify({"ok": False, "error": "Collection not found"}), 404
-
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -837,28 +1101,15 @@ def api_db_collection(guild_id, collection):
         limit = min(50, max(1, int(request.args.get("limit", 20))))
     except ValueError:
         limit = 20
-
     gid = int(guild_id)
     coll = DB_COLLECTIONS[collection]
 
     async def _get():
-        if collection == "guilds":
-            query = {"_id": gid}
-        else:
-            query = {"guild_id": gid}
-
+        query = {"_id": gid} if collection == "guilds" else {"guild_id": gid}
         total = await coll.count_documents(query)
         cursor = coll.find(query).skip((page - 1) * limit).limit(limit)
-        items = []
-        async for doc in cursor:
-            items.append(_serialize_doc(doc))
-        return {
-            "items": items,
-            "total": total,
-            "page": page,
-            "pages": max(1, (total + limit - 1) // limit),
-        }
-
+        items = [_serialize_doc(doc) async for doc in cursor]
+        return {"items": items, "total": total, "page": page, "pages": max(1, (total + limit - 1) // limit)}
     return jsonify({"ok": True, "data": run_async(_get())})
 
 @api.route("/api/guilds/<guild_id>/db/<collection>/<doc_id>", methods=["DELETE"])
@@ -869,7 +1120,6 @@ def api_db_delete_doc(guild_id, collection, doc_id):
         return jsonify({"ok": False, "error": "Cannot delete guild config documents"}), 403
     if collection not in ("timed_roles", "mod_logs"):
         return jsonify({"ok": False, "error": "Collection not found"}), 404
-
     coll = DB_COLLECTIONS[collection]
     gid = int(guild_id)
 
@@ -888,7 +1138,7 @@ def api_db_delete_doc(guild_id, collection, doc_id):
         return jsonify({"ok": False, "error": result["error"]}), result.get("code", 400)
     return jsonify({"ok": True, "data": result})
 
-# ──────────────────────── Actions ─────────────────────
+# ──────────────────── Actions ────────────────────
 @api.route("/api/guilds/<guild_id>/actions/<action>", methods=["POST"])
 @require_owner
 @rate_limit(max_calls=15, period=60)
@@ -920,7 +1170,6 @@ def api_action(guild_id, action):
             channel = guild.get_channel(int(channel_id))
             if not channel or not isinstance(channel, discord.TextChannel):
                 return {"error": "Channel not found"}
-
             try:
                 if action == "lock":
                     ow = channel.overwrites_for(guild.default_role)
@@ -929,7 +1178,6 @@ def api_action(guild_id, action):
                     await log_action(int(guild_id), "lock", int(OWNER_ID), str(owner),
                                      channel_id=channel.id, source="dashboard")
                     return {"ok": True}
-
                 if action == "unlock":
                     ow = channel.overwrites_for(guild.default_role)
                     ow.send_messages = None
@@ -937,7 +1185,6 @@ def api_action(guild_id, action):
                     await log_action(int(guild_id), "unlock", int(OWNER_ID), str(owner),
                                      channel_id=channel.id, source="dashboard")
                     return {"ok": True}
-
                 if action == "slowmode":
                     val = int(seconds) if seconds is not None else 0
                     if val < 0 or val > 21600:
@@ -946,7 +1193,6 @@ def api_action(guild_id, action):
                     await log_action(int(guild_id), "slowmode", int(OWNER_ID), str(owner),
                                      channel_id=channel.id, duration=str(val), source="dashboard")
                     return {"ok": True}
-
                 if action == "purge":
                     amt = int(amount) if amount else 0
                     if amt < 1 or amt > 500:
@@ -999,19 +1245,16 @@ def api_action(guild_id, action):
                                  target_id=int(target_id), target_name=name,
                                  reason=reason, source="dashboard")
                 return {"ok": True}
-
             if action == "tempban":
                 if not duration:
-                    return {"error": "duration required (e.g. 1h, 30m)"}
+                    return {"error": "duration required"}
                 secs = _parse_duration(duration)
                 if secs is None:
                     return {"error": "Invalid duration"}
                 target = member or discord.Object(id=int(target_id))
                 await guild.ban(target, reason=f"[Dashboard] {reason} | {duration}")
                 await timed_roles.insert_one({
-                    "type": "tempban",
-                    "guild_id": int(guild_id),
-                    "user_id": int(target_id),
+                    "type": "tempban", "guild_id": int(guild_id), "user_id": int(target_id),
                     "execute_at": datetime.now(timezone.utc) + timedelta(seconds=secs),
                 })
                 name = str(member) if member else str(target_id)
@@ -1019,19 +1262,17 @@ def api_action(guild_id, action):
                                  target_id=int(target_id), target_name=name,
                                  reason=reason, duration=duration, source="dashboard")
                 return {"ok": True}
-
             if action == "kick":
                 if not member:
-                    return {"error": "Member not found in guild"}
+                    return {"error": "Member not found"}
                 await member.kick(reason=f"[Dashboard] {reason}")
                 await log_action(int(guild_id), "kick", int(OWNER_ID), str(owner),
                                  target_id=member.id, target_name=str(member),
                                  reason=reason, source="dashboard")
                 return {"ok": True}
-
             if action == "timeout":
                 if not member:
-                    return {"error": "Member not found in guild"}
+                    return {"error": "Member not found"}
                 if not duration:
                     return {"error": "duration required"}
                 secs = _parse_duration(duration)
@@ -1042,26 +1283,21 @@ def api_action(guild_id, action):
                                  target_id=member.id, target_name=str(member),
                                  reason=reason, duration=duration, source="dashboard")
                 return {"ok": True}
-
             if action == "untimeout":
                 if not member:
-                    return {"error": "Member not found in guild"}
+                    return {"error": "Member not found"}
                 await member.timeout(None)
                 await log_action(int(guild_id), "untimeout", int(OWNER_ID), str(owner),
-                                 target_id=member.id, target_name=str(member),
-                                 source="dashboard")
+                                 target_id=member.id, target_name=str(member), source="dashboard")
                 return {"ok": True}
-
             if action == "warn":
                 if not member:
-                    return {"error": "Member not found in guild"}
+                    return {"error": "Member not found"}
                 cfg = await guilds.find_one({"_id": int(guild_id)})
                 data = cfg.get("moderation", {}).get(str(member.id), {"warns": [], "notes": []}) if cfg else {"warns": [], "notes": []}
                 warn_id = len(data["warns"]) + 1
                 data["warns"].append({
-                    "id": warn_id,
-                    "reason": reason,
-                    "moderator": int(OWNER_ID),
+                    "id": warn_id, "reason": reason, "moderator": int(OWNER_ID),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 await guilds.update_one(
@@ -1073,10 +1309,8 @@ def api_action(guild_id, action):
                                  target_id=member.id, target_name=str(member),
                                  reason=reason, source="dashboard")
                 return {"ok": True, "warn_id": warn_id}
-
         except (discord.Forbidden, discord.HTTPException) as e:
             return {"error": str(e)}
-
         return {"error": "Unknown action"}
 
     result = run_async(_execute())
@@ -1084,7 +1318,7 @@ def api_action(guild_id, action):
         return jsonify({"ok": False, "error": result["error"]}), 400
     return jsonify({"ok": True, "data": result})
 
-# ──────────────────────── Embeds ──────────────────────
+# ──────────────────── Embeds ────────────────────
 @api.route("/api/guilds/<guild_id>/embeds/send", methods=["POST"])
 @require_owner
 @rate_limit(max_calls=10, period=60)
@@ -1095,14 +1329,11 @@ def send_embed(guild_id):
     content = body.get("content") or None
     buttons = body.get("buttons") or []
     embed_data = body.get("embed")
-
     if not channel_id:
         return jsonify({"ok": False, "error": "channel_id required"}), 400
-
     guild = bot.get_guild(int(guild_id))
     if not guild:
         return jsonify({"ok": False, "error": "Guild not found"}), 404
-
     channel = guild.get_channel(int(channel_id))
     if not channel or not isinstance(channel, discord.TextChannel):
         return jsonify({"ok": False, "error": "Channel not found"}), 404
@@ -1119,36 +1350,23 @@ def send_embed(guild_id):
         if embed_data and isinstance(embed_data, dict):
             title = (embed_data.get("title") or "")[:256] or None
             description = (embed_data.get("description") or "")[:4096] or None
-            color = embed_data.get("color")
             try:
-                color = int(color) if color is not None else 0x5865F2
+                color = int(embed_data.get("color") if embed_data.get("color") is not None else 0x5865F2)
             except (ValueError, TypeError):
                 color = 0x5865F2
-
             embed = discord.Embed(title=title, description=description, color=color)
-
             author = embed_data.get("author")
             if author and isinstance(author, dict) and author.get("name"):
-                embed.set_author(
-                    name=str(author["name"])[:256],
-                    icon_url=author.get("icon_url") or None,
-                )
-
+                embed.set_author(name=str(author["name"])[:256], icon_url=author.get("icon_url") or None)
             if embed_data.get("thumbnail"):
                 embed.set_thumbnail(url=embed_data["thumbnail"])
             if embed_data.get("image"):
                 embed.set_image(url=embed_data["image"])
-
             footer = embed_data.get("footer")
             if footer and isinstance(footer, dict) and footer.get("text"):
-                embed.set_footer(
-                    text=str(footer["text"])[:2048],
-                    icon_url=footer.get("icon_url") or None,
-                )
-
+                embed.set_footer(text=str(footer["text"])[:2048], icon_url=footer.get("icon_url") or None)
             if embed_data.get("timestamp"):
                 embed.timestamp = datetime.now(timezone.utc)
-
             fields = embed_data.get("fields") or []
             total_len = len(title or "") + len(description or "")
             for f in fields[:25]:
