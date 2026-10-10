@@ -123,11 +123,12 @@ nav .nb{display:none}
  nav button{padding:10px 14px;border-radius:12px;font-size:15px;width:100%}
  header .brand{display:none}
 }
+.cmdr.off b{opacity:.5;text-decoration:line-through}.cmdr b{overflow-wrap:anywhere}.bar2{margin-bottom:12px}.bl{display:flex;justify-content:space-between;font-size:14px;margin-bottom:2px}.h3{font-size:14px;color:var(--tx2);margin:18px 0 6px;font-weight:600}
 @media(max-width:760px){
  body{font-size:15px}.bar{padding:9px 14px}.brand{font-size:16px}#srv{max-width:130px;flex:1}.pill{display:none}
  main{padding:20px 14px calc(96px + env(safe-area-inset-bottom,0px))}h1{font-size:26px}.two,.eg{grid-template-columns:1fr}.prev{position:static}
  nav{position:fixed;left:0;right:0;bottom:0;margin:0;padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));background:var(--glass);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-top:1px solid var(--line);z-index:15;justify-content:flex-start;gap:0;overflow-x:auto;scroll-snap-type:x proximity}
- nav button{flex-direction:column;gap:2px;font-size:10.5px;padding:6px 2px;flex:1 0 76px;border-radius:12px;min-width:0;scroll-snap-align:start}nav button span{overflow:hidden;text-overflow:ellipsis;max-width:100%}
+ nav button{flex-direction:column;gap:2px;font-size:10.5px;padding:6px 2px;flex:1 0 60px;border-radius:12px;min-width:0;scroll-snap-align:start}nav button span{overflow:hidden;text-overflow:ellipsis;max-width:100%}
  .card{padding:16px;border-radius:16px}.grid{grid-template-columns:repeat(2,1fr)}.v{font-size:26px}
  .toast{bottom:calc(84px + env(safe-area-inset-bottom,0px))}.sbar{bottom:calc(82px + env(safe-area-inset-bottom,0px));width:calc(100% - 28px);justify-content:space-between;padding-left:16px}.sbar span{white-space:normal;font-size:13px}
  .rt{min-width:0}.rt thead{display:none}.rt,.rt tbody,.rt tr,.rt td{display:block}.rt tr{padding:10px 0;border-bottom:1px solid var(--line)}.rt tr:last-child{border:0}
@@ -176,6 +177,7 @@ nav .nb{display:none}
   <button class="on" data-t="inicio"><svg class="i" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>Resumen</span></button>
   <button data-t="mod"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span>Moderación</span></button>
   <button data-t="mem"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2.2.6 3.5 2.5 3.5 6"/></svg><span>Miembros</span></button>
+  <button data-t="cmd"><svg class="i" viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 18h8"/></svg><span>Comandos</span></button>
   <button data-t="msg"><svg class="i" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4zM8 9h8M8 12h5"/></svg><span>Mensajes</span></button>
   <button data-t="sys"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span>Sistema</span></button>
 </nav>
@@ -239,6 +241,21 @@ nav .nb{display:none}
   </div>
 </section>
 
+<section id="cmd"><h1>Comandos</h1><p class="sub">Activa o desactiva cualquier comando. Un comando desactivado no se elimina: nadie puede usarlo hasta que lo vuelvas a activar.</p>
+  <div class="grid" id="cst"></div>
+  <div class="two"><div class="card"><div class="hd" style="align-items:center"><h2 style="margin:0">Uso de comandos</h2><select id="cdr" aria-label="Rango"><option value="7">7 días</option><option value="30">30 días</option><option value="90">90 días</option></select></div><div class="lc" id="cchart" style="margin-top:14px"></div></div>
+    <div class="card"><h2>Más usados</h2><div id="ctop"></div></div></div>
+  <div class="tools"><input type="text" id="cq" placeholder="Buscar comando" aria-label="Buscar comando"><select id="cc2" aria-label="Categoría"></select><select id="cs" aria-label="Estado"><option value="">Todos</option><option value="on">Activos</option><option value="off">Desactivados</option></select></div>
+  <div id="cl"></div>
+  <div class="card"><div class="row"><div><b>Avisar al usar un comando desactivado</b><small>Si está apagado, el bot lo ignora sin responder</small></div><label class="sw"><input type="checkbox" id="cn" aria-label="Avisar"><b></b></label></div></div>
+</section>
+
+<section id="err"><h1>Errores del bot</h1><p class="sub">Excepciones recientes agrupadas por tipo, para encontrar fallos sin revisar los logs de Render.</p>
+  <div class="grid" id="est"></div>
+  <div class="tools"><input type="text" id="eq" placeholder="Buscar en mensaje o comando" aria-label="Buscar error"><select id="el" aria-label="Nivel"><option value="">Todos</option><option>error</option><option>warning</option></select><button class="btn r s" id="eclear">Limpiar todo</button></div>
+  <div class="card"><div id="erl"></div><div class="pg"><button class="btn g s" id="epv">Anterior</button><span id="epi"></span><button class="btn g s" id="enx">Siguiente</button></div></div>
+</section>
+
 <section id="rol"><h1>Paneles de roles</h1><p class="sub">Mensajes con botones para que los miembros se asignen roles solos.</p>
   <div class="eg"><div>
     <div class="card"><h2>Panel</h2>
@@ -266,6 +283,9 @@ nav .nb{display:none}
 
 <section id="db"><h1>Base de datos</h1><p class="sub">Explora lo que guarda el bot en MongoDB para este servidor.</p>
   <div class="card" id="dbs" hidden><div class="hd"><b>Almacenamiento</b><span class="muted" id="dbst"></span></div><div class="stg"><i id="dbsb" style="width:0"></i></div></div>
+  <div class="card" id="rtc" hidden><div class="hd" style="align-items:center"><h2 style="margin:0">Retención de datos</h2><div class="hr"><button class="btn g s" id="rtn">Limpiar ahora</button><button class="btn s" id="rts">Guardar</button></div></div>
+    <p class="muted" style="margin:6px 0 4px">El bot borra solo los registros más viejos que los días elegidos, para no llenar el almacenamiento gratuito de MongoDB.</p>
+    <div id="rtl"></div><p class="muted" id="rtm" style="margin:12px 0 0;font-size:13px"></p></div>
   <div class="grid" id="dbc"></div>
   <div class="card" id="dbv" hidden>
     <div class="hd" style="align-items:center"><h2 id="dbt" style="margin:0"></h2><div class="hr"><button class="btn g s" id="dbx">Exportar JSON</button></div></div>
@@ -339,7 +359,7 @@ const md=t=>esc(t).replace(/\*\*(.+?)\*\*/gs,"<b>$1</b>").replace(/__(.+?)__/gs,
 const url=s=>/^https:\/\//i.test(s||"")?esc(s):"";
 
 // Navegación
-const GR={msg:[["emb","Embeds"],["rol","Roles"],["prog","Programados"]],sys:[["conf","Ajustes"],["db","Base de datos"],["act","Actividad"]]};
+const GR={msg:[["emb","Embeds"],["rol","Roles"],["prog","Programados"]],sys:[["conf","Ajustes"],["db","Base de datos"],["err","Errores"],["act","Actividad"]]};
 const GOF={},LAST={msg:"emb",sys:"conf"};Object.entries(GR).forEach(([g,a])=>a.forEach(([id])=>GOF[id]=g));
 async function go(id){
   if(dirty&&tab==="conf"&&id!=="conf"){if(!await dlg("Tienes cambios sin guardar. ¿Salir sin guardar?"))return;setDirty(false)}
@@ -351,7 +371,7 @@ async function go(id){
 }
 $("#nav").onclick=e=>{const b=e.target.closest("button");if(!b)return;const k=b.dataset.t;go(GR[k]?LAST[k]:k)};
 $("#sn").onclick=e=>{const b=e.target.closest("button");if(b)go(b.dataset.s)};
-const loaders={inicio:()=>loadOverview(),mod:loadLogs,mem:()=>{},emb:initEmbed,rol:initRP,db:loadDB,act:loadAct,prog:loadSched,conf:loadSettings};
+const loaders={inicio:()=>loadOverview(),mod:loadLogs,mem:()=>{},emb:initEmbed,rol:initRP,db:loadDB,act:loadAct,cmd:loadCmd,err:loadErr,prog:loadSched,conf:loadSettings};
 const load=guard(async()=>{if(G)await loaders[tab]()});
 
 // Arranque
@@ -439,7 +459,7 @@ async function loadOverview(quiet){
 }
 
 // Buscador rápido (Ctrl+K)
-const CMD=[["inicio","Resumen"],["mod","Moderación"],["mem","Miembros"],["emb","Embeds"],["rol","Paneles de roles"],["prog","Programados"],["conf","Ajustes y apariencia"],["db","Base de datos"],["act","Actividad del panel"]];
+const CMD=[["inicio","Resumen"],["mod","Moderación"],["mem","Miembros"],["emb","Embeds"],["rol","Paneles de roles"],["prog","Programados"],["conf","Ajustes y apariencia"],["db","Base de datos"],["act","Actividad del panel"],["cmd","Comandos"],["err","Errores del bot"]];
 let qsel=0,qit=[],qt2;
 function qopen(){const d=$("#qd");d.hidden=false;requestAnimationFrame(()=>d.classList.add("on"));$("#qi").value="";qsel=0;qdraw();$("#qi").focus()}
 function qclose(){$("#qd").classList.remove("on");setTimeout(()=>$("#qd").hidden=true,200)}
@@ -620,7 +640,7 @@ $("#dall").onclick=guard(async()=>{
 let DBC="",dbp=1,DBD=[];
 const DBL={guilds:"Configuración",timed_roles:"Programados",mod_logs:"Historial"};
 const bytes=n=>n>1048576?(n/1048576).toFixed(1)+" MB":n>1024?Math.round(n/1024)+" KB":(n||0)+" B";
-async function loadDB(){
+async function loadDB(){loadRet();
   $("#dbc").innerHTML=skel(3);
   const d=await api(`/api/guilds/${G}/db`);
   $("#dbc").innerHTML=d.collections.map(c=>`<button class="card dbk${c.name===DBC?" on":""}" data-c="${esc(c.name)}"><div class="k">${esc(DBL[c.name]||c.name)}</div><div class="v">${c.count}</div><div class="muted">${esc(c.name)}${c.size_bytes?" · "+bytes(c.size_bytes):""}</div></button>`).join("");
@@ -711,6 +731,65 @@ async function loadAct(){
 $("#apv").onclick=()=>{ap--;load()};$("#anx").onclick=()=>{ap++;load()};$("#ae").onchange=()=>{ap=1;load()};
 $("#alsave").onclick=guard(async()=>{await api("/api/panel/settings",{method:"PUT",body:JSON.stringify({alerts:{login:$("#al_l").checked,denied:$("#al_d").checked,destructive:$("#al_x").checked}})});toast("Alertas guardadas")});
 $("#revoke").onclick=guard(async()=>{if(!await dlg("Se cerrará la sesión en todos los dispositivos, incluido este. ¿Continuar?"))return;await api("/api/panel/revoke-sessions",{method:"POST",body:"{}"});G=null;showLogin()});
+
+// Comandos
+let CM=[],CU=null;
+const PERM={all:"Todos",staff:"Staff",manager:"Manager",admin:"Admin"},cid=c=>c.id||c.name;
+function tilesC(){const on=CM.filter(c=>c.enabled).length;
+  $("#cst").innerHTML=[["c","Comandos",CM.length],["m","Activos",on],["b","Desactivados",CM.length-on],["t","Usos en el periodo",CU?CU.total:"—"]].map(([i,k,v])=>`<div class="card tile"><div class="tic"><svg class="i" viewBox="0 0 24 24">${TI[i]}</svg></div><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("")}
+async function loadCmd(){
+  const d=await api(`/api/guilds/${G}/commands`);CM=d.commands||[];$("#cn").checked=!!d.notify;
+  const cats=[...new Set(CM.map(c=>c.category||"General"))],cur=$("#cc2").value;
+  $("#cc2").innerHTML='<option value="">Todas las categorías</option>'+cats.map(c=>`<option>${esc(c)}</option>`).join("");$("#cc2").value=cats.includes(cur)?cur:"";
+  drawCmd();loadCStats();
+}
+function drawCmd(){
+  const q=$("#cq").value.toLowerCase(),ct=$("#cc2").value,st=$("#cs").value;
+  const f=CM.filter(c=>(!q||((c.display||c.name)+" "+(c.description||"")).toLowerCase().includes(q))&&(!ct||(c.category||"General")===ct)&&(!st||(st==="on")===c.enabled)),g={};
+  f.forEach(c=>(g[c.category||"General"]??=[]).push(c));tilesC();
+  $("#cl").innerHTML=f.length?Object.entries(g).map(([k,a])=>`<div class="card"><div class="hd" style="align-items:center;margin-bottom:6px"><h2 style="margin:0">${esc(k)} <span class="muted" style="font-weight:400;font-size:14px">${a.filter(c=>c.enabled).length}/${a.length}</span></h2><div class="hr"><button class="btn g s" data-bk="${esc(k)}" data-v="1">Activar todos</button><button class="btn r s" data-bk="${esc(k)}" data-v="0">Desactivar todos</button></div></div>${a.map(c=>`<div class="row cmdr${c.enabled?"":" off"}"><div style="min-width:0"><b>${esc(c.display||c.name)}</b> <span class="tag">${esc(PERM[c.permission]||c.permission||"Todos")}</span>${c.type==="slash"?' <span class="tag rol">slash</span>':""}${c.locked?' <span class="tag">protegido</span>':""}<small>${esc(c.description||"Sin descripción")}${c.uses!=null?` · ${c.uses} usos`:""}</small></div><label class="sw"><input type="checkbox" data-cn="${esc(cid(c))}"${c.enabled?" checked":""}${c.locked?" disabled":""} aria-label="Activar ${esc(c.display||c.name)}"><b></b></label></div>`).join("")}</div>`).join(""):emp("search","Sin comandos","Prueba con otro filtro");
+}
+["#cq"].forEach(s=>$(s).oninput=drawCmd);["#cc2","#cs"].forEach(s=>$(s).onchange=drawCmd);
+$("#cl").addEventListener("change",guard(async e=>{const i=e.target.dataset.cn;if(i==null)return;const on=e.target.checked,c=CM.find(x=>cid(x)===i);
+  try{await api(`/api/guilds/${G}/commands/${encodeURIComponent(i)}`,{method:"PUT",body:JSON.stringify({enabled:on})});c.enabled=on;toast(on?"Comando activado":"Comando desactivado");drawCmd()}catch(er){e.target.checked=!on;throw er}}));
+$("#cl").addEventListener("click",guard(async e=>{const b=e.target.closest("[data-bk]");if(!b)return;const k=b.dataset.bk,v=b.dataset.v==="1",ids=CM.filter(c=>(c.category||"General")===k&&!c.locked).map(cid);
+  if(!ids.length)return;if(!v&&!await dlg(`¿Desactivar ${ids.length} comando(s) de ${k}? Nadie podrá usarlos hasta que los actives.`,{danger:true}))return;
+  await api(`/api/guilds/${G}/commands/bulk`,{method:"PUT",body:JSON.stringify({ids,enabled:v})});toast("Actualizado");await loadCmd()}));
+$("#cn").onchange=guard(async()=>{await api(`/api/guilds/${G}/commands/settings`,{method:"PUT",body:JSON.stringify({notify:$("#cn").checked})});toast("Guardado")});
+async function loadCStats(){
+  try{const d=await api(`/api/guilds/${G}/commands/stats?days=${$("#cdr").value}`);CU=d;
+    lineChart($("#cchart"),(d.per_day||[]).map(x=>({l:x.date.slice(5),v:[x.count]})),[col("--acc")],["Usos"]);
+    const tc=(d.top_commands||[]).slice(0,8),mx=Math.max(1,...tc.map(x=>x.count)),tu=(d.top_users||[]).slice(0,5);
+    $("#ctop").innerHTML=(tc.length?tc.map(x=>`<div class="bar2"><div class="bl"><span>${esc(x.name)}</span><b>${x.count}</b></div><div class="stg"><i style="width:${x.count/mx*100}%"></i></div></div>`).join(""):emp("clock","Sin datos",""))+(tu.length?`<div class="h3">Quién más los usa</div><ul class="rank">${tu.map(u=>`<li><span class="uc">${av(u.name,u.avatar_url,24)}${esc(u.name)}</span><b>${u.count}</b></li>`).join("")}</ul>`:"");
+  }catch(e){CU=null;$("#cchart").innerHTML=emp("clock","Sin estadísticas","El bot aún no las registra");$("#ctop").innerHTML=""}
+  tilesC();
+}
+$("#cdr").onchange=()=>loadCStats();
+
+// Errores
+let ep=1,ERR=[];
+async function loadErr(){
+  const p=new URLSearchParams({page:ep,limit:10});if($("#eq").value)p.set("q",$("#eq").value);if($("#el").value)p.set("level",$("#el").value);
+  const d=await api(`/api/errors?${p}`),s=d.summary||{};ERR=d.items;
+  $("#est").innerHTML=[["w","Últimas 24 h",s.last_24h??"—"],["b","Tipos distintos",s.groups??d.total],["c","Más frecuente",s.top?String(s.top).slice(0,22):"—"]].map(([k0,k,v],i)=>`<div class="card tile"><div class="tic"><svg class="i" viewBox="0 0 24 24">${TI[k0]}</svg></div><div class="k">${k}</div><div class="v" style="font-size:${i===2?"15px":"30px"}">${esc(v)}</div></div>`).join("");
+  $("#erl").innerHTML=ERR.length?ERR.map((x,i)=>`<details class="doc"><summary><span class="tag ${x.level==="warning"?"warn":"ban"}">${esc(x.level)}</span><span>${esc(String(x.message||"").slice(0,110))}</span><small class="muted" style="margin-left:auto">×${x.count||1} · ${fmt(x.last_seen)}</small></summary><div class="muted" style="margin:0 0 8px;font-size:13px">${x.command?`Comando: <b>${esc(x.command)}</b> · `:""}${x.source?esc(x.source)+" · ":""}${x.user_name?esc(x.user_name)+" · ":""}Primera vez: ${fmt(x.first_seen)}</div><pre>${esc(x.traceback||x.message||"")}</pre><div class="form"><button class="btn g s" data-ec="${i}">Copiar</button><button class="btn r s" data-ed="${esc(x.id)}">Marcar resuelto</button></div></details>`).join(""):emp("shield","Sin errores","El bot no ha registrado excepciones");
+  $("#epi").textContent=`Página ${d.page} de ${d.pages}`;$("#epv").disabled=d.page<=1;$("#enx").disabled=d.page>=d.pages;
+}
+$("#epv").onclick=()=>{ep--;load()};$("#enx").onclick=()=>{ep++;load()};
+let eqt;$("#eq").oninput=()=>{clearTimeout(eqt);eqt=setTimeout(()=>{ep=1;load()},350)};$("#el").onchange=()=>{ep=1;load()};
+$("#erl").onclick=guard(async e=>{const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.ec!=null){try{await navigator.clipboard.writeText(ERR[+b.dataset.ec].traceback||ERR[+b.dataset.ec].message||"");toast("Copiado")}catch(x){toast("No se pudo copiar")}}
+  else if(b.dataset.ed){await api(`/api/errors/${b.dataset.ed}`,{method:"DELETE"});toast("Marcado como resuelto");await loadErr()}});
+$("#eclear").onclick=guard(async()=>{if(!await dlg("¿Limpiar todos los errores registrados? No se puede deshacer."))return;await api("/api/errors",{method:"DELETE",body:JSON.stringify({all:true})});ep=1;toast("Errores eliminados");await loadErr()});
+
+// Retención de datos
+const RT=[["moderation","Historial de sanciones","Bans, warns, kicks y demás acciones",[[0,"Nunca"],[180,"180 días"],[365,"1 año"],[730,"2 años"]]],["events","Eventos del servidor","Entradas, salidas y mensajes borrados",[[7,"7 días"],[14,"14 días"],[30,"30 días"],[60,"60 días"],[90,"90 días"]]],["commands","Uso de comandos","Registro de cada comando ejecutado",[[7,"7 días"],[30,"30 días"],[90,"90 días"],[180,"180 días"]]],["errors","Errores del bot","Excepciones y advertencias",[[7,"7 días"],[30,"30 días"],[90,"90 días"]]],["audit","Actividad del panel","Accesos y acciones de la web",[[30,"30 días"],[90,"90 días"],[180,"180 días"]]]];
+async function loadRet(){try{const d=await api("/api/retention"),r=d.retention||{};$("#rtc").hidden=false;
+  $("#rtl").innerHTML=RT.map(([k,t,s,o])=>{const cur=r[k]?.days??o[0][0],oo=o.some(([v])=>v===cur)?o:[...o,[cur,cur+" días"]];return `<div class="row"><div><b>${t}</b><small>${s}</small></div><select data-rt="${k}" aria-label="${t}">${oo.map(([v,l])=>`<option value="${v}"${v===cur?" selected":""}>${l}</option>`).join("")}</select></div>`}).join("");
+  $("#rtm").textContent=d.last_cleanup?`Último borrado automático: ${fmt(d.last_cleanup)}${d.last_deleted!=null?` · ${d.last_deleted} registros`:""}`:"Aún no se ha ejecutado el borrado automático."}catch(e){$("#rtc").hidden=true}}
+$("#rts").onclick=guard(async()=>{const o={};$$("#rtl [data-rt]").forEach(s=>o[s.dataset.rt]={days:+s.value});await api("/api/retention",{method:"PUT",body:JSON.stringify({retention:o})});toast("Retención guardada")});
+$("#rtn").onclick=guard(async()=>{if(!await dlg("Se borrarán ahora todos los registros más viejos que los días configurados. No se puede deshacer.",{danger:true}))return;
+  const d=await api("/api/retention/run",{method:"POST",body:"{}"}),n=Object.values(d.deleted||{}).reduce((a,b)=>a+b,0);toast(`${n} registro(s) eliminados`);loadRet();loadDB()});
 
 // Programados
 async function loadSched(){loadSM();
