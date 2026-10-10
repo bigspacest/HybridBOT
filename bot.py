@@ -1,13 +1,13 @@
 import discord
 from discord.ext import commands
 from config import TOKEN
-from database import ensure_indexes
+from database import ensure_indexes, ensure_panel_meta
+import time
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 intents.guilds = True
-intents.moderation = True
 
 class HybridBOT(commands.Bot):
     def __init__(self):
@@ -15,30 +15,31 @@ class HybridBOT(commands.Bot):
             command_prefix="?",
             intents=intents,
             case_insensitive=True,
-            help_command=None
+            help_command=None,
         )
         self.start_time = None
 
-async def setup_hook(self):
-    from database import ensure_indexes, ensure_panel_meta
-    await ensure_indexes()
-    await ensure_panel_meta()
-    for ext in ("security", "welcomer", "autoroles", "moderation", "utility", "automod", "events", "scheduler"):
-        try:
-            await self.load_extension(ext)
-        except Exception as e:
-            print(f"Failed to load {ext}: {e}")
-    await self.tree.sync()
+    async def setup_hook(self):
+        await ensure_indexes()
+        await ensure_panel_meta()
+        for ext in (
+            "security", "welcomer", "autoroles", "moderation",
+            "utility", "automod", "events", "scheduler", "rolepanels",
+        ):
+            try:
+                await self.load_extension(ext)
+            except Exception as e:
+                print(f"[load] {ext}: {e}")
+        await self.tree.sync()
 
     async def on_ready(self):
-        import time
         if self.start_time is None:
             self.start_time = time.time()
         print(f"Logged in as {self.user} | {self.user.id}")
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="HybridBOT | ?cmds"
+                name="HybridBOT | ?cmds",
             )
         )
 
