@@ -19,11 +19,16 @@ class HybridBOT(commands.Bot):
         )
         self.start_time = None
 
-    async def setup_hook(self):
-        await ensure_indexes()
-        for ext in ("security", "welcomer", "autoroles", "moderation", "utility", "automod", "events"):
+async def setup_hook(self):
+    from database import ensure_indexes, ensure_panel_meta
+    await ensure_indexes()
+    await ensure_panel_meta()
+    for ext in ("security", "welcomer", "autoroles", "moderation", "utility", "automod", "events", "scheduler"):
+        try:
             await self.load_extension(ext)
-        await self.tree.sync()
+        except Exception as e:
+            print(f"Failed to load {ext}: {e}")
+    await self.tree.sync()
 
     async def on_ready(self):
         import time
